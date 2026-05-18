@@ -1,0 +1,14 @@
+# compiled output
+/dist
+/node_modules
+
+# testing
+/coverage
+
+# NestJS
+.nest/
+
+# ignore package manager files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
