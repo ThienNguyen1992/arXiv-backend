@@ -1,9 +1,37 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { UsersModule } from './users/users.module';
+import { TopicsModule } from './topics/topics.module';
+import { PapersModule } from './papers/papers.module';
+import { AuthModule } from './auth/auth.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
-  imports: [],
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
+    TypeOrmModule.forRoot({
+      type: 'postgres',
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5432', 10),
+      username: process.env.DB_USERNAME || 'postgres',
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_DATABASE,
+      autoLoadEntities: true,
+      synchronize: true, // Warning: Set to false in production
+    }),
+    UsersModule,
+    TopicsModule,
+    PapersModule,
+    AuthModule,
+    SchedulerModule,
+    AiModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })
