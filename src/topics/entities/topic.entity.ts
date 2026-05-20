@@ -22,7 +22,7 @@ export class Topic {
 
   @ApiPropertyOptional({ example: 'All about Machine Learning', description: 'Topic description' })
   @Column({ type: 'text', nullable: true })
-  description: string;
+  description: string | null;
 
   @ApiProperty({ example: true, description: 'Whether the topic is active' })
   @Column({ default: true })
@@ -36,7 +36,7 @@ export class Topic {
   @UpdateDateColumn()
   updated_at: Date;
 
-  @ManyToOne(() => Category, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Category, (category) => category.topics, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'category_id' })
   category: Category;
 }
