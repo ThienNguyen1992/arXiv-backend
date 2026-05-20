@@ -9,6 +9,9 @@ import { PapersModule } from './papers/papers.module';
 import { AuthModule } from './auth/auth.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { AiModule } from './ai/ai.module';
+import { CategoriesModule } from './categories/categories.module';
+import { AuthorsModule } from './authors/authors.module';
+import { DatabaseModule } from './database/database.module';
 
 @Module({
   imports: [
@@ -22,6 +25,7 @@ import { AiModule } from './ai/ai.module';
       username: process.env.DB_USERNAME || 'postgres',
       password: process.env.DB_PASSWORD,
       database: process.env.DB_DATABASE,
+      uuidExtension: 'pgcrypto',
       autoLoadEntities: true,
       synchronize: true, // Warning: Set to false in production
     }),
@@ -31,6 +35,9 @@ import { AiModule } from './ai/ai.module';
     AuthModule,
     SchedulerModule,
     AiModule,
+    CategoriesModule,
+    AuthorsModule,
+    DatabaseModule,
   ],
   controllers: [AppController],
   providers: [AppService],
