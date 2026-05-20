@@ -53,7 +53,7 @@ export class User {
   @JoinTable({
     name: 'users_favorite_papers',
     joinColumn: { name: 'user_id', referencedColumnName: 'id' },
-    inverseJoinColumn: { name: 'paper_id', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'article_id', referencedColumnName: 'id' },
   })
   favorite_papers: Paper[];
 }

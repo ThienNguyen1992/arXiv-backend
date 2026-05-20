@@ -1,42 +1,40 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Topic } from './entities/topic.entity';
 import { CreateTopicDto } from './dto/create-topic.dto';
 import { UpdateTopicDto } from './dto/update-topic.dto';
+import { Topic } from './entities/topic.entity';
 
 @Injectable()
 export class TopicsService {
   constructor(
     @InjectRepository(Topic)
-    private readonly topicsRepository: Repository<Topic>,
+    private topicsRepository: Repository<Topic>,
   ) {}
 
-  async create(createTopicDto: CreateTopicDto): Promise<Topic> {
+  create(createTopicDto: CreateTopicDto) {
     const topic = this.topicsRepository.create(createTopicDto);
-    return await this.topicsRepository.save(topic);
+    return this.topicsRepository.save(topic);
   }
 
-  async findAll(): Promise<Topic[]> {
-    return await this.topicsRepository.find();
+  findAll() {
+    return this.topicsRepository.find({ relations: ['category'] });
   }
 
-  async findOne(id: string): Promise<Topic> {
-    const topic = await this.topicsRepository.findOne({ where: { id } });
-    if (!topic) {
-      throw new NotFoundException(`Topic #${id} not found`);
-    }
+  async findOne(id: number) {
+    const topic = await this.topicsRepository.findOne({ where: { id }, relations: ['category'] });
+    if (!topic) throw new NotFoundException(`Topic #${id} not found`);
     return topic;
   }
 
-  async update(id: string, updateTopicDto: UpdateTopicDto): Promise<Topic> {
+  async update(id: number, updateTopicDto: UpdateTopicDto) {
     const topic = await this.findOne(id);
     this.topicsRepository.merge(topic, updateTopicDto);
-    return await this.topicsRepository.save(topic);
+    return this.topicsRepository.save(topic);
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: number) {
     const topic = await this.findOne(id);
-    await this.topicsRepository.remove(topic);
+    return this.topicsRepository.remove(topic);
   }
 }

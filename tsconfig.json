@@ -24,5 +24,6 @@
     "strictBindCallApply": false,
     "noFallthroughCasesInSwitch": false,
     "strictPropertyInitialization":false
-  }
+  },
+  "exclude": ["backend", "dist", "node_modules"]
 }
