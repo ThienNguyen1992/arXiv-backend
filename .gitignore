@@ -45,3 +45,8 @@ Thumbs.db
 # debug
 npm-debug.log
 yarn-error.log
+
+# Spec Kit
+.specify/
+.github/agents/
+.github/prompts/
