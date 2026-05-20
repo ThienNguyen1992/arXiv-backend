@@ -1,5 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Topic } from '../../topics/entities/topic.entity';
 
 @Entity('categories')
 export class Category {
@@ -17,7 +18,7 @@ export class Category {
 
   @ApiPropertyOptional({ example: 'All about computer science', description: 'Category description' })
   @Column({ type: 'text', nullable: true })
-  description: string;
+  description: string | null;
 
   @ApiProperty({ example: '2023-01-01T00:00:00.000Z', description: 'Creation timestamp' })
   @CreateDateColumn()
@@ -26,4 +27,7 @@ export class Category {
   @ApiProperty({ example: '2023-01-01T00:00:00.000Z', description: 'Last update timestamp' })
   @UpdateDateColumn()
   updated_at: Date;
+
+  @OneToMany(() => Topic, (topic) => topic.category)
+  topics: Topic[];
 }
