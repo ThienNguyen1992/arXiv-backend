@@ -2,8 +2,9 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } f
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 
 @ApiTags('categories')
 @Controller('categories')
@@ -21,12 +22,17 @@ export class CategoriesController {
 
   @Get()
   @ApiOperation({ summary: 'Get all categories' })
-  findAll(@Query('format') format?: string) {
+  @ApiQuery({ name: 'format', required: false, enum: ['flat'] })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, example: 20 })
+  async findAll(@Query('format') format?: string, @Query() pagination?: PaginationQueryDto) {
     if (format === 'flat') {
-      return this.categoriesService.findAllTopicsFlat();
+      console.log('Flat')
+      return this.categoriesService.findAllTopicsFlat(pagination ?? new PaginationQueryDto());
     }
 
-    return this.categoriesService.findAll();
+    console.log('findall')
+    return await this.categoriesService.findAll();
   }
 
   @Post('sync-arxiv')

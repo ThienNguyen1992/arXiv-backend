@@ -1,11 +1,15 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany, Index } from 'typeorm';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { PaperTopic } from './paper-topic.entity';
-import { PaperAuthor } from './paper-author.entity';
 import { PaperVersion } from './paper-version.entity';
+import { PaperFile } from './file.entity';
+import { PaperKeyword } from './paper-keyword.entity';
 
-@Entity('articles')
+@Entity('papers')
 @Index('idx_articles_arxiv_id', ['arxiv_id'])
+@Index('idx_papers_title', ['title'])
+@Index('idx_papers_published_score', ['published_at', 'score'])
+@Index('idx_papers_status', ['status'])
 export class Paper {
   @ApiProperty({ example: 'uuid', description: 'Paper ID' })
   @PrimaryGeneratedColumn('uuid')
@@ -55,9 +59,21 @@ export class Paper {
   @Column({ length: 20, default: 'pending' })
   status: string;
 
+  @ApiProperty({ example: 4.5, description: 'Paper score or rating' })
+  @Column({ type: 'float', default: 0 })
+  score: number;
+
   @ApiPropertyOptional({ description: 'Flexible metadata (JSONB)' })
   @Column({ type: 'jsonb', nullable: true })
   metadata: Record<string, any>;
+
+  @ApiPropertyOptional({ example: 'C. Balázs, E. L. Berger', description: 'Raw authors string' })
+  @Column({ type: 'text', nullable: true })
+  authors: string;
+
+  @ApiPropertyOptional({ description: 'Parsed authors array' })
+  @Column({ type: 'jsonb', nullable: true })
+  authors_parsed: string[][];
 
   @Index('idx_articles_search_vector', { synchronize: false })
   @Column({ type: 'tsvector', nullable: true, select: false })
@@ -78,9 +94,12 @@ export class Paper {
   @OneToMany(() => PaperTopic, (pt) => pt.paper)
   paperTopics: PaperTopic[];
 
-  @OneToMany(() => PaperAuthor, (pa) => pa.paper)
-  paperAuthors: PaperAuthor[];
-
   @OneToMany(() => PaperVersion, (pv) => pv.paper)
   versions: PaperVersion[];
+
+  @OneToMany(() => PaperFile, (pf) => pf.paper)
+  files: PaperFile[];
+
+  @OneToMany(() => PaperKeyword, (pk) => pk.paper)
+  paperKeywords: PaperKeyword[];
 }

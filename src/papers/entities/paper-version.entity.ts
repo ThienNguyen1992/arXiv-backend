@@ -2,8 +2,8 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, Jo
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Paper } from './paper.entity';
 
-@Entity('article_versions')
-@Unique(['article_id', 'version_number'])
+@Entity('paper_versions')
+@Unique(['paper_id', 'version_number'])
 export class PaperVersion {
   @ApiProperty({ example: 1, description: 'Version record ID' })
   @PrimaryGeneratedColumn()
@@ -11,7 +11,7 @@ export class PaperVersion {
 
   @ApiProperty({ description: 'Paper ID' })
   @Column('uuid')
-  article_id: string;
+  paper_id: string;
 
   @ApiProperty({ example: 1, description: 'Version number' })
   @Column()
@@ -46,6 +46,6 @@ export class PaperVersion {
   created_at: Date;
 
   @ManyToOne(() => Paper, (paper) => paper.versions, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'article_id' })
+  @JoinColumn({ name: 'paper_id' })
   paper: Paper;
 }

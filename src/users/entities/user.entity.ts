@@ -21,6 +21,10 @@ export class User {
   @Column({ nullable: true })
   full_name: string;
 
+  @ApiProperty({ example: true, description: 'Indicates if this is the user\'s first login' })
+  @Column({ default: true })
+  isFirstLogged: boolean;
+
   @ApiProperty({ example: '2023-01-01T00:00:00.000Z', description: 'Creation timestamp' })
   @CreateDateColumn()
   created_at: Date;
@@ -53,7 +57,7 @@ export class User {
   @JoinTable({
     name: 'users_favorite_papers',
     joinColumn: { name: 'user_id', referencedColumnName: 'id' },
-    inverseJoinColumn: { name: 'article_id', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'paper_id', referencedColumnName: 'id' },
   })
   favorite_papers: Paper[];
 }

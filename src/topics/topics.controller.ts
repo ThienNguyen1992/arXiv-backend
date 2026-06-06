@@ -1,8 +1,9 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
 import { TopicsService } from './topics.service';
 import { CreateTopicDto } from './dto/create-topic.dto';
 import { UpdateTopicDto } from './dto/update-topic.dto';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 
 @ApiTags('topics')
 @Controller('topics')
@@ -18,8 +19,10 @@ export class TopicsController {
 
   @Get()
   @ApiOperation({ summary: 'Get all topics' })
-  findAll() {
-    return this.topicsService.findAll();
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, example: 20 })
+  findAll(@Query() query: PaginationQueryDto) {
+    return this.topicsService.findAll(query);
   }
 
   @Get(':id')

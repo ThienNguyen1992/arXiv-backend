@@ -13,11 +13,11 @@ export class CreateTopicDto {
   @MaxLength(20)
   code: string;
 
-  @ApiProperty({ example: 'Machine Learning', description: 'Name of the topic' })
+  @ApiProperty({ example: 'Machine Learning', description: 'Title of the topic' })
   @IsString()
   @IsNotEmpty()
   @MaxLength(150)
-  name: string;
+  title: string;
 
   @ApiPropertyOptional({ example: 'All about Machine Learning', description: 'Description of the topic' })
   @IsOptional()

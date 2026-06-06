@@ -1,11 +1,14 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, Request } from '@nestjs/common';
 import { PapersService } from './papers.service';
 import { CreatePaperDto } from './dto/create-paper.dto';
 import { UpdatePaperDto } from './dto/update-paper.dto';
 import { CreatePaperVersionDto } from './dto/create-paper-version.dto';
 import { AddPaperTopicDto } from './dto/add-paper-topic.dto';
-import { AddPaperAuthorDto } from './dto/add-paper-author.dto';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ArxivPapersQueryDto } from './dto/arxiv-papers-query.dto';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { PaperFilterDto } from './dto/paper-filter.dto';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('papers')
 @Controller('papers')
@@ -20,9 +23,48 @@ export class PapersController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all papers' })
-  findAll() {
-    return this.papersService.findAll();
+  @ApiOperation({ summary: 'Get papers from DB. Supports pagination, topic filter, and text search.' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'size', required: false, example: 20 })
+  @ApiQuery({ name: 'topics', required: false, isArray: true, example: ['cs.AI', 'cs.LG'], description: 'Filter by topic codes' })
+  @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in both title and author' })
+  @ApiQuery({ name: 'title', required: false, example: 'neural networks', description: 'Search only in title' })
+  @ApiQuery({ name: 'author', required: false, example: 'Andrew Ng', description: 'Search only in author' })
+  findAll(@Query() query: PaperFilterDto) {
+    return this.papersService.findAll(query);
+  }
+
+  @Get('arxiv/search')
+  @ApiOperation({ summary: 'Fetch papers from arXiv by topic codes without saving to database' })
+  @ApiQuery({ name: 'topics', required: true, example: 'cs.AI,cs.CV,cs.LG' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'size', required: false, example: 20 })
+  searchArxivByTopics(@Query() query: ArxivPapersQueryDto) {
+    return this.papersService.fetchArxivPapersByTopicsQuery(query);
+  }
+
+  @Get('arxiv/feed')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Fetch personalized arXiv feed using current user topics' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'size', required: false, example: 20 })
+  getMyArxivFeed(@Request() req, @Query() query: PaginationQueryDto) {
+    return this.papersService.fetchArxivFeedForUser(req.user.id, query);
+  }
+
+  @Post('calculate-scores')
+  @ApiOperation({ summary: 'Calculate and update scores for all papers in the database' })
+  @ApiResponse({ status: 200, description: 'Scores updated.' })
+  calculateScoresForAll() {
+    return this.papersService.calculateScoresForAllPapers();
+  }
+
+  @Post(':id/calculate-score')
+  @ApiOperation({ summary: 'Calculate and update score for a specific paper' })
+  @ApiResponse({ status: 200, description: 'Score calculated and updated.' })
+  calculateScoreForOne(@Param('id') id: string) {
+    return this.papersService.calculateScoreForPaper(id);
   }
 
   @Get(':id')
@@ -53,8 +95,10 @@ export class PapersController {
 
   @Get(':id/versions')
   @ApiOperation({ summary: 'Get all versions of a paper' })
-  getVersions(@Param('id') id: string) {
-    return this.papersService.getVersions(id);
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'size', required: false, example: 20 })
+  getVersions(@Param('id') id: string, @Query() query: PaginationQueryDto) {
+    return this.papersService.getVersions(id, query);
   }
 
   // --- Topics ---
@@ -69,19 +113,5 @@ export class PapersController {
   @ApiOperation({ summary: 'Remove a topic from a paper' })
   removeTopic(@Param('id') id: string, @Param('topicId') topicId: string) {
     return this.papersService.removeTopic(id, +topicId);
-  }
-
-  // --- Authors ---
-  @Post(':id/authors')
-  @ApiOperation({ summary: 'Add an author to a paper' })
-  @ApiResponse({ status: 201, description: 'Author linked.' })
-  addAuthor(@Param('id') id: string, @Body() dto: AddPaperAuthorDto) {
-    return this.papersService.addAuthor(id, dto);
-  }
-
-  @Delete(':id/authors/:authorId')
-  @ApiOperation({ summary: 'Remove an author from a paper' })
-  removeAuthor(@Param('id') id: string, @Param('authorId') authorId: string) {
-    return this.papersService.removeAuthor(id, +authorId);
   }
 }
