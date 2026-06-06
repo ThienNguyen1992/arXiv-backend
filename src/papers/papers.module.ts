@@ -5,10 +5,14 @@ import { PapersController } from './papers.controller';
 import { Paper } from './entities/paper.entity';
 import { PaperVersion } from './entities/paper-version.entity';
 import { PaperTopic } from './entities/paper-topic.entity';
-import { PaperAuthor } from './entities/paper-author.entity';
+import { User } from '../users/entities/user.entity';
+import { Topic } from '../topics/entities/topic.entity';
+import { PaperFile } from './entities/file.entity';
+import { Keyword } from './entities/keyword.entity';
+import { PaperKeyword } from './entities/paper-keyword.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Paper, PaperVersion, PaperTopic, PaperAuthor])],
+  imports: [TypeOrmModule.forFeature([Paper, PaperVersion, PaperTopic, User, Topic, PaperFile, Keyword, PaperKeyword])],
   controllers: [PapersController],
   providers: [PapersService],
   exports: [PapersService],

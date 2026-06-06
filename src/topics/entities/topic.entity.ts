@@ -1,8 +1,9 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Category } from '../../categories/entities/category.entity';
 
 @Entity('topics')
+@Index('idx_topics_code', ['code'], { unique: true })
 export class Topic {
   @ApiProperty({ example: 1, description: 'Topic ID' })
   @PrimaryGeneratedColumn()
@@ -13,12 +14,12 @@ export class Topic {
   category_id: number;
 
   @ApiProperty({ example: 'cs.LG', description: 'Topic code' })
-  @Column({ length: 20, unique: true })
+  @Column({ length: 50, unique: true })
   code: string;
 
-  @ApiProperty({ example: 'Machine Learning', description: 'Name of the topic' })
+  @ApiProperty({ example: 'Machine Learning', description: 'Title of the topic' })
   @Column({ length: 150 })
-  name: string;
+  title: string;
 
   @ApiPropertyOptional({ example: 'All about Machine Learning', description: 'Topic description' })
   @Column({ type: 'text', nullable: true })

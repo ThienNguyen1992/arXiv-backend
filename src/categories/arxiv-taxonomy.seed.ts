@@ -3,8 +3,7 @@ import type { ParsedArxivCategory } from './categories.service';
 export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
   {
     code: 'cs',
-    name: 'Computer Science',
-    description: 'arXiv Computer Science category group',
+    title: 'Computer Science',
     topics: [
       ['cs.AI', 'Artificial Intelligence'],
       ['cs.AR', 'Hardware Architecture'],
@@ -46,33 +45,30 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['cs.SE', 'Software Engineering'],
       ['cs.SI', 'Social and Information Networks'],
       ['cs.SY', 'Systems and Control'],
-    ].map(([code, name]) => ({ code, name, description: null })),
+    ].map(([code, title]) => ({ code, title, description: null })),
   },
   {
     code: 'econ',
-    name: 'Economics',
-    description: 'arXiv Economics category group',
+    title: 'Economics',
     topics: [
       ['econ.EM', 'Econometrics'],
       ['econ.GN', 'General Economics'],
       ['econ.TH', 'Theoretical Economics'],
-    ].map(([code, name]) => ({ code, name, description: null })),
+    ].map(([code, title]) => ({ code, title, description: null })),
   },
   {
     code: 'eess',
-    name: 'Electrical Engineering and Systems Science',
-    description: 'arXiv Electrical Engineering and Systems Science category group',
+    title: 'Electrical Engineering and Systems Science',
     topics: [
       ['eess.AS', 'Audio and Speech Processing'],
       ['eess.IV', 'Image and Video Processing'],
       ['eess.SP', 'Signal Processing'],
       ['eess.SY', 'Systems and Control'],
-    ].map(([code, name]) => ({ code, name, description: null })),
+    ].map(([code, title]) => ({ code, title, description: null })),
   },
   {
     code: 'math',
-    name: 'Mathematics',
-    description: 'arXiv Mathematics category group',
+    title: 'Mathematics',
     topics: [
       ['math.AC', 'Commutative Algebra'],
       ['math.AG', 'Algebraic Geometry'],
@@ -106,12 +102,11 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['math.SG', 'Symplectic Geometry'],
       ['math.SP', 'Spectral Theory'],
       ['math.ST', 'Statistics Theory'],
-    ].map(([code, name]) => ({ code, name, description: null })),
+    ].map(([code, title]) => ({ code, title, description: null })),
   },
   {
     code: 'physics',
-    name: 'Physics',
-    description: 'arXiv Physics category group',
+    title: 'Physics',
     topics: [
       ['astro-ph.CO', 'Cosmology and Nongalactic Astrophysics'],
       ['astro-ph.EP', 'Earth and Planetary Astrophysics'],
@@ -164,12 +159,11 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['physics.soc-ph', 'Physics and Society'],
       ['physics.space-ph', 'Space Physics'],
       ['quant-ph', 'Quantum Physics'],
-    ].map(([code, name]) => ({ code, name, description: null })),
+    ].map(([code, title]) => ({ code, title, description: null })),
   },
   {
     code: 'q-bio',
-    name: 'Quantitative Biology',
-    description: 'arXiv Quantitative Biology category group',
+    title: 'Quantitative Biology',
     topics: [
       ['q-bio.BM', 'Biomolecules'],
       ['q-bio.CB', 'Cell Behavior'],
@@ -181,12 +175,11 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['q-bio.QM', 'Quantitative Methods'],
       ['q-bio.SC', 'Subcellular Processes'],
       ['q-bio.TO', 'Tissues and Organs'],
-    ].map(([code, name]) => ({ code, name, description: null })),
+    ].map(([code, title]) => ({ code, title, description: null })),
   },
   {
     code: 'q-fin',
-    name: 'Quantitative Finance',
-    description: 'arXiv Quantitative Finance category group',
+    title: 'Quantitative Finance',
     topics: [
       ['q-fin.CP', 'Computational Finance'],
       ['q-fin.EC', 'Economics'],
@@ -197,12 +190,11 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['q-fin.RM', 'Risk Management'],
       ['q-fin.ST', 'Statistical Finance'],
       ['q-fin.TR', 'Trading and Market Microstructure'],
-    ].map(([code, name]) => ({ code, name, description: null })),
+    ].map(([code, title]) => ({ code, title, description: null })),
   },
   {
     code: 'stat',
-    name: 'Statistics',
-    description: 'arXiv Statistics category group',
+    title: 'Statistics',
     topics: [
       ['stat.AP', 'Applications'],
       ['stat.CO', 'Computation'],
@@ -210,6 +202,6 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['stat.ML', 'Machine Learning'],
       ['stat.OT', 'Other Statistics'],
       ['stat.TH', 'Statistics Theory'],
-    ].map(([code, name]) => ({ code, name, description: null })),
+    ].map(([code, title]) => ({ code, title, description: null })),
   },
 ];

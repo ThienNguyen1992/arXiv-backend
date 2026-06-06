@@ -58,11 +58,14 @@ export class AuthService {
     const tokens = await this.getTokens(user.id, user.email);
     await this.updateRefreshToken(user.id, tokens.refresh_token);
 
-    // Fetch fresh user object without password to return
-    const fullUser = await this.usersRepository.findOne({ where: { id: user.id } });
+    const fullUser = await this.usersRepository.findOne({
+      where: { id: user.id },
+      relations: ['topics', 'topics.category'],
+    });
     if (!fullUser) {
       throw new UnauthorizedException('User not found');
     }
+    delete (fullUser as Partial<User>).password;
     
     return {
       user: fullUser,
@@ -79,8 +82,25 @@ export class AuthService {
     return { message: 'Successfully logged out.' };
   }
 
+  async getProfile(userId: string) {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      relations: ['topics', 'topics.category'],
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    delete (user as Partial<User>).password;
+    return user;
+  }
+
   async refreshTokens(userId: string, refreshToken: string): Promise<LoginResponseDto> {
-    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      relations: ['topics', 'topics.category'],
+    });
     if (!user || !user.hashed_refresh_token) {
       throw new ForbiddenException('Access Denied');
     }
@@ -92,6 +112,7 @@ export class AuthService {
 
     const tokens = await this.getTokens(user.id, user.email);
     await this.updateRefreshToken(user.id, tokens.refresh_token);
+    delete (user as Partial<User>).password;
 
     return {
       user,

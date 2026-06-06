@@ -3,16 +3,16 @@ import { ApiProperty } from '@nestjs/swagger';
 import { Paper } from './paper.entity';
 import { Topic } from '../../topics/entities/topic.entity';
 
-@Entity('article_topics')
-@Index('idx_article_topics_topic', ['topic_id'])
-@Index('idx_unique_primary_topic', ['article_id'], {
+@Entity('paper_topics')
+@Index('idx_paper_topics_topic', ['topic_id'])
+@Index('idx_unique_primary_topic', ['paper_id'], {
   unique: true,
   where: '"is_primary" = true',
 })
 export class PaperTopic {
   @ApiProperty({ description: 'Paper ID' })
   @PrimaryColumn('uuid')
-  article_id: string;
+  paper_id: string;
 
   @ApiProperty({ description: 'Topic ID' })
   @PrimaryColumn()
@@ -23,7 +23,7 @@ export class PaperTopic {
   is_primary: boolean;
 
   @ManyToOne(() => Paper, (paper) => paper.paperTopics, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'article_id' })
+  @JoinColumn({ name: 'paper_id' })
   paper: Paper;
 
   @ManyToOne(() => Topic, { onDelete: 'CASCADE' })

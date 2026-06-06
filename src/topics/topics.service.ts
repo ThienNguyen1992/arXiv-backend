@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { CreateTopicDto } from './dto/create-topic.dto';
 import { UpdateTopicDto } from './dto/update-topic.dto';
 import { Topic } from './entities/topic.entity';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { getPagination, toPaginatedResponse } from '../common/pagination';
 
 @Injectable()
 export class TopicsService {
@@ -17,8 +19,16 @@ export class TopicsService {
     return this.topicsRepository.save(topic);
   }
 
-  findAll() {
-    return this.topicsRepository.find({ relations: ['category'] });
+  async findAll(query: PaginationQueryDto) {
+    const { page, size, skip, take } = getPagination(query);
+    const [data, total] = await this.topicsRepository.findAndCount({
+      relations: ['category'],
+      order: { code: 'ASC' },
+      skip,
+      take,
+    });
+
+    return toPaginatedResponse(data, total, page, size);
   }
 
   async findOne(id: number) {

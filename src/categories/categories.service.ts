@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { CreateCategoryDto } from './dto/create-category.dto';
@@ -6,17 +6,19 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 import { Category } from './entities/category.entity';
 import { Topic } from '../topics/entities/topic.entity';
 import { ARXIV_TAXONOMY_SEED } from './arxiv-taxonomy.seed';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { getPagination, toPaginatedResponse } from '../common/pagination';
 
 export interface ParsedArxivTopic {
   code: string;
-  name: string;
+  title: string;
   description: string | null;
+
 }
 
 export interface ParsedArxivCategory {
   code: string;
-  name: string;
-  description: string | null;
+  title: string;
   topics: ParsedArxivTopic[];
 }
 
@@ -32,7 +34,11 @@ export class CategoriesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  create(createCategoryDto: CreateCategoryDto) {
+  async create(createCategoryDto: CreateCategoryDto) {
+    const existing = await this.categoriesRepository.findOneBy({ code: createCategoryDto.code });
+    if (existing) {
+      throw new ConflictException(`Category with code '${createCategoryDto.code}' already exists`);
+    }
     const category = this.categoriesRepository.create(createCategoryDto);
     return this.categoriesRepository.save(category);
   }
@@ -41,7 +47,7 @@ export class CategoriesService {
     return this.categoriesRepository.find({
       relations: ['topics'],
       order: {
-        name: 'ASC',
+        title: 'ASC',
         topics: {
           code: 'ASC',
         },
@@ -49,24 +55,31 @@ export class CategoriesService {
     });
   }
 
-  async findAllTopicsFlat() {
-    const topics = await this.topicsRepository.find({
+  async findAllTopicsFlat(query: PaginationQueryDto) {
+    const { page, size, skip, take } = getPagination(query);
+    const [topics, total] = await this.topicsRepository.findAndCount({
       relations: ['category'],
       order: { code: 'ASC' },
+      skip,
+      take,
     });
+    console.log("🚀 ~ CategoriesService ~ findAllTopicsFlat ~ topics:", topics)
 
-    return topics.map((topic) => ({
+    const data = topics.map((topic) => ({
       id: topic.id,
       code: topic.code,
       slug: this.toSlug(topic.code),
-      name: topic.name,
+      title: topic.title,
       description: topic.description,
       category: {
         id: topic.category.id,
         code: topic.category.code,
-        name: topic.category.name,
+        title: topic.category.title,
       },
     }));
+    console.log("🚀 ~ CategoriesService ~ findAllTopicsFlat ~ data:", data)
+
+    return toPaginatedResponse(data, total, page, size);
   }
 
   async findOne(id: number) {
@@ -114,8 +127,7 @@ export class CategoriesService {
         if (!category) {
           category = manager.create(Category, parsedCategory);
         } else {
-          category.name = parsedCategory.name;
-          category.description = parsedCategory.description;
+          category.title = parsedCategory.title;
         }
 
         category = await manager.save(Category, category);
@@ -130,7 +142,7 @@ export class CategoriesService {
               is_active: true,
             });
           } else {
-            topic.name = parsedTopic.name;
+            topic.title = parsedTopic.title;
             topic.description = parsedTopic.description;
             topic.category_id = category.id;
             topic.is_active = true;
@@ -179,11 +191,10 @@ export class CategoriesService {
 
         currentCategory = categories.get(code) ?? {
           code,
-          name: heading.text,
-          description: `arXiv ${heading.text} category group`,
+          title: heading.text,
           topics: [],
         };
-        currentCategory.name = heading.text;
+        currentCategory.title = heading.text;
         categories.set(code, currentCategory);
         continue;
       }
@@ -201,7 +212,7 @@ export class CategoriesService {
       const descriptionHtml = html.slice(heading.end, nextHeading?.start ?? html.length);
       const topic: ParsedArxivTopic = {
         code: topicMatch[1],
-        name: topicMatch[2],
+        title: topicMatch[2],
         description: this.normalizeText(descriptionHtml) || null,
       };
 

@@ -1,200 +1,159 @@
-// get-arxiv-tags.js
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
+Chắc chắn rồi! Đây là câu hỏi rất trọng tâm. Để lấy các bài báo (paper) mới nhất từ arXiv theo nhiều topic cùng lúc (ví dụ `cs.AI` và `cs.CV`), bạn sẽ sử dụng API tìm kiếm của arXiv với một cú pháp query đặc biệt.
 
-async function buildArxivTags() {
-  try {
-    console.log('🔄 Đang kết nối tới arXiv.org để quét toàn bộ danh mục...');
-    const response = await axios.get('https://arxiv.org/category_taxonomy');
-    const htmlContent = response.data;
-    
-    // Regex quét chính xác cặp mã ngành và tên ngành trong HTML của arXiv
-    const tagRegex = /([a-z\-]+\.[A-Z\-]+|[a-z\-]+)\s+\(([^)]+)\)/g;
-    const tagsMap = {};
-    let match;
-    let count = 0;
+**Nguyên tắc cốt lõi:** Bạn sẽ xây dựng một chuỗi `search_query` duy nhất, trong đó các topic được nối với nhau bằng toán tử `OR`.
 
-    while ((match = tagRegex.exec(htmlContent)) !== null) {
-      const code = match[1];
-      const name = match[2];
-      
-      if (code.includes('example') || name.length > 80) continue;
+### 1. Cú pháp Query của arXiv API
 
-      let groupCode = code.includes('.') ? code.split('.')[0] : 'physics';
-      
-      // Gộp các mã vật lý cũ về chung nhóm physics
-      if (['astro-ph', 'cond-mat', 'hep-th', 'hep-ph', 'hep-ex', 'hep-lat', 'nucl-th', 'nucl-ex', 'gr-qc', 'quant-ph'].includes(code)) {
-        groupCode = 'physics';
-      }
+-   **Endpoint:** `http://export.arxiv.org/api/query`
+-   **Tham số chính:** `search_query`
+-   **Để lọc theo category (topic):** Dùng tiền tố `cat:`. Ví dụ: `cat:cs.AI`.
+-   **Để kết hợp nhiều category:** Dùng toán tử `OR`. Ví dụ: `cat:cs.AI OR cat:cs.CV OR cat:cs.LG`.
+-   **Để lấy bài mới nhất:** Dùng tham số `sortBy=submittedDate` và `sortOrder=descending`.
+-   **Để phân trang (pagination):** Dùng `start` (vị trí bắt đầu, tính từ 0) và `max_results` (số lượng kết quả mỗi trang).
 
-      const groupNames = {
-        'cs': 'Computer Science & AI',
-        'math': 'Mathematics',
-        'q-bio': 'Quantitative Biology',
-        'q-fin': 'Quantitative Finance',
-        'stat': 'Statistics',
-        'eess': 'Electrical Engineering',
-        'econ': 'Economics',
-        'physics': 'Physics & Quantum'
-      };
+### 2. Ví dụ URL cụ thể
 
-      if (!tagsMap[groupCode]) {
-        tagsMap[groupCode] = {
-          groupName: groupNames[groupCode] || groupCode.toUpperCase(),
-          tags: []
-        };
-      }
+Giả sử bạn muốn lấy **15 bài báo mới nhất** thuộc một trong hai topic: **Artificial Intelligence (`cs.AI`)** hoặc **Computer Vision and Pattern Recognition (`cs.CV`)**, ở trang đầu tiên.
 
-      if (!tagsMap[groupCode].tags.some(t => t.id === code)) {
-        tagsMap[groupCode].tags.push({
-          id: code,
-          slug: code.toLowerCase().replace('.', '-'), // Tạo slug dạng cs-ai giống daily.dev
-          name: name,
-        });
-        count++;
-      }
-    }
+-   `search_query`: `cat:cs.AI OR cat:cs.CV`
+-   `sortBy`: `submittedDate`
+-   `sortOrder`: `descending`
+-   `start`: `0` (vì là trang 1)
+-   `max_results`: `15`
 
-    // Đảm bảo thư mục đích tồn tại
-    const dirPath = path.join(__dirname, 'src', 'arxiv', 'data');
-    if (!fs.existsSync(dirPath)){
-        fs.mkdirSync(dirPath, { recursive: true });
-    }
-    
-    fs.writeFileSync(
-      path.join(dirPath, 'arxiv-categories.json'), 
-      JSON.stringify(tagsMap, null, 2), 
-      'utf-8'
-    );
+**URL đầy đủ sẽ là (chưa encode):**
+`http://export.arxiv.org/api/query?search_query=cat:cs.AI OR cat:cs.CV&sortBy=submittedDate&sortOrder=descending&start=0&max_results=15`
 
-    console.log(`✅ Thành công! Đã quét được ${count} tags và lưu vào dự án NestJS.`);
-  } catch (error) {
-    console.error('❌ Lỗi:', error.message);
-  }
-}
+**Quan trọng:** Khi lập trình, bạn phải encode URL, đặc biệt là các ký tự đặc biệt như dấu cách trong `OR`.
 
-buildArxivTags();
+### 3. Cách triển khai trong NestJS Service
 
+Đây là một ví dụ hàm trong service của bạn (ví dụ `FeedService`) để thực hiện việc này. Hàm này sẽ nhận vào một mảng các topic ID và thông tin phân trang.
 
---------------------------------------------------
+```typescript
+// Trong file feed.service.ts
 
-// src/arxiv/interfaces/category.interface.ts
-export interface ArxivTag {
-  id: string;     // ví dụ: "cs.AI"
-  slug: string;   // ví dụ: "cs-ai"
-  name: string;   // ví dụ: "Artificial Intelligence"
-}
-
-export interface ArxivGroup {
-  groupName: string;
-  tags: ArxivTag[];
-}
-
-export interface ArxivCategoriesMap {
-  [groupCode: string]: ArxivGroup;
-}
-
-
-===============================
-// src/arxiv/arxiv.module.ts
-import { Module } from '@nestjs/common';
-import { ArxivController } from './arxiv.controller';
-import { ArxivService } from './arxiv.service';
-import * as fs from 'fs';
-import * as path from 'path';
-
-@Module({
-  controllers: [ArxivController],
-  providers: [
-    ArxivService,
-    {
-      provide: 'ARXIV_DATA_PROVIDER',
-      useFactory: () => {
-        // Đọc file JSON đồng bộ ngay khi khởi động ứng dụng
-        const filePath = path.join(__dirname, 'data', 'arxiv-categories.json');
-        const fallbackPath = path.join(process.cwd(), 'src', 'arxiv', 'data', 'arxiv-categories.json');
-        const finalPath = fs.existsSync(filePath) ? filePath : fallbackPath;
-        
-        const rawData = fs.readFileSync(finalPath, 'utf-8');
-        return JSON.parse(rawData);
-      },
-    },
-  ],
-  exports: [ArxivService], // Export nếu các module khác (như bài viết) cần dùng chung
-})
-export class ArxivModule {}
-
-===============
-// src/arxiv/arxiv.service.ts
-import { Injectable, Inject } from '@nestjs/common';
-import { ArxivCategoriesMap, ArxivTag } from './interfaces/category.interface';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
+import * as cheerio from 'cheerio';
+import { PaginationDto } from './dto/pagination.dto'; // Giả sử bạn có DTO này
 
 @Injectable()
-export class ArxivService {
-  constructor(
-    @Inject('ARXIV_DATA_PROVIDER') 
-    private readonly categoriesData: ArxivCategoriesMap,
-  ) {}
+export class FeedService {
+  private readonly logger = new Logger(FeedService.name);
+  private readonly ARXIV_API_URL = 'http://export.arxiv.org/api/query';
 
-  // 1. Trả về cấu trúc cây phân nhóm (Dùng để vẽ Sidebar đa tầng giống daily.dev)
-  getCategoriesTree(): ArxivCategoriesMap {
-    return this.categoriesData;
-  }
+  constructor(private readonly httpService: HttpService) {}
 
-  // 2. Trả về mảng phẳng (Flat array) (Dùng cho thanh tìm kiếm tag hoặc gợi ý)
-  getFlatCategories() {
-    const flatList: Array<ArxivTag & { group: string }> = [];
-    
-    for (const groupInfo of Object.values(this.categoriesData)) {
-      for (const tag of groupInfo.tags) {
-        flatList.push({
-          id: tag.id,
-          slug: tag.slug,
-          name: tag.name,
-          group: groupInfo.groupName,
-        });
-      }
+  /**
+   * Lấy các bài báo mới nhất từ arXiv dựa trên một danh sách các topic.
+   * @param topics - Mảng các topic ID, ví dụ: ['cs.AI', 'cs.CV']
+   * @param pagination - Đối tượng chứa page và limit
+   * @returns Dữ liệu bài báo đã được xử lý và thông tin phân trang
+   */
+  async fetchPapersByTopics(topics: string[], pagination: PaginationDto) {
+    if (!topics || topics.length === 0) {
+      throw new BadRequestException('At least one topic is required.');
     }
-    return flatList;
+
+    // 1. Xây dựng chuỗi search_query từ mảng topics
+    // Input: ['cs.AI', 'cs.CV'] -> Output: "cat:cs.AI OR cat:cs.CV"
+    const searchQuery = topics.map(topic => `cat:${topic}`).join(' OR ');
+
+    // 2. Tính toán tham số 'start' cho pagination
+    const start = (pagination.page - 1) * pagination.limit;
+
+    // 3. Tạo URL hoàn chỉnh, nhớ encodeURIComponent cho query
+    const url = new URL(this.ARXIV_API_URL);
+    url.searchParams.append('search_query', searchQuery);
+    url.searchParams.append('sortBy', 'submittedDate');
+    url.searchParams.append('sortOrder', 'descending');
+    url.searchParams.append('start', start.toString());
+    url.searchParams.append('max_results', pagination.limit.toString());
+
+    this.logger.log(`Querying arXiv with URL: ${url.toString()}`);
+
+    try {
+      // 4. Gọi API
+      const response = await firstValueFrom(this.httpService.get(url.toString()));
+      const xmlData = response.data;
+      
+      // 5. Parse XML trả về và đóng gói thành JSON (hàm này từ câu trả lời trước)
+      return this.parseArxivXML(xmlData);
+
+    } catch (error) {
+      this.logger.error('Failed to fetch papers from arXiv', error.stack);
+      throw new Error('Could not retrieve papers from arXiv.');
+    }
   }
 
-  // 3. Hàm tiện ích: Kiểm tra xem một Category Id client gửi lên có hợp lệ không
-  isValidCategory(tagId: string): boolean {
-    const flatList = this.getFlatCategories();
-    return flatList.some(tag => tag.id === tagId);
+  // Hàm helper để parse XML, bạn có thể tách ra file riêng
+  private parseArxivXML(xml: string) {
+    const $ = cheerio.load(xml, { xmlMode: true });
+
+    const totalResults = parseInt($('opensearch\\:totalResults').text(), 10) || 0;
+    
+    const entries = [];
+    $('entry').each((_, entry) => {
+      const authors = $(entry).find('author').map((_, author) => $(author).find('name').text()).get();
+
+      entries.push({
+        id: $(entry).find('id').text().split('/abs/').pop(),
+        title: $(entry).find('title').text().trim().replace(/\s+/g, ' '),
+        summary: $(entry).find('summary').text().trim().replace(/\s+/g, ' '),
+        authors: authors,
+        publishedDate: $(entry).find('published').text(),
+        updatedDate: $(entry).find('updated').text(),
+        pdfLink: $(entry).find('link[title="pdf"]').attr('href'),
+        primaryCategory: $(entry).find('arxiv\\:primary_category').attr('term'),
+      });
+    });
+
+    return {
+      totalItems: totalResults,
+      data: entries,
+    };
   }
 }
+```
 
-==========================// src/arxiv/arxiv.controller.ts
-import { Controller, Get, Query } from '@nestjs/common';
-import { ArxivService } from './arxiv.service';
+### Cách sử dụng hàm này trong Controller
 
-@Controller('api/arxiv')
-export class ArxivController {
-  constructor(private readonly arxivService: ArxivService) {}
+Trong controller, bạn sẽ gọi hàm `fetchPapersByTopics` này. Ví dụ, nếu bạn muốn lấy feed cá nhân hóa cho người dùng đã đăng nhập:
 
-  @Get('categories')
-  getCategories(@Query('format') format: string) {
-    // Nếu client gọi: /api/arxiv/categories?format=flat
-    if (format === 'flat') {
-      return this.arxivService.getFlatCategories();
-    }
-    
-    // Mặc định trả về cấu trúc cây nhóm ngành
-    return this.arxivService.getCategoriesTree();
+```typescript
+// Trong feed.controller.ts
+@UseGuards(JwtAuthGuard)
+@Get()
+async getMyFeed(@Req() req, @Query() paginationDto: PaginationDto) {
+  // Giả sử bạn đã có hàm lấy danh sách topic yêu thích của user
+  // Ví dụ: const preferredTopics = ['cs.AI', 'cs.LG'];
+  const preferredTopics = await this.usersService.getPreferredTopicIds(req.user.id);
+
+  if (preferredTopics.length === 0) {
+    return { totalItems: 0, data: [] };
   }
+
+  const feedData = await this.feedService.fetchPapersByTopics(preferredTopics, paginationDto);
+
+  return {
+    pagination: {
+      page: paginationDto.page,
+      limit: paginationDto.limit,
+      totalItems: feedData.totalItems,
+      totalPages: Math.ceil(feedData.totalItems / paginationDto.limit),
+    },
+    data: feedData.data,
+  };
 }
+```
 
-Sample Computer Science
-cs.AI (Artificial Intelligence)
-Covers all areas of AI except Vision, Robotics, Machine Learning, Multiagent Systems, and Computation and Language (Natural Language Processing), which have separate subject areas. In particular, includes Expert Systems, Theorem Proving (although this may overlap with Logic in Computer Science), Knowledge Representation, Planning, and Uncertainty in AI. Roughly includes material in ACM Subject Classes I.2.0, I.2.1, I.2.3, I.2.4, I.2.8, and I.2.11.
+### Tóm lại
 
-cs.AR (Hardware Architecture)
-Covers systems organization and hardware architecture. Roughly includes material in ACM Subject Classes C.0, C.1, and C.5.
+Để lấy paper mới từ nhiều topic, bạn chỉ cần:
 
-cs.CC (Computational Complexity)
-Covers models of computation, complexity classes, structural complexity, complexity tradeoffs, upper and lower bounds. Roughly includes material in ACM Subject Classes F.1 (computation by abstract devices), F.2.3 (tradeoffs among complexity measures), and F.4.3 (formal languages), although some material in formal languages may be more appropriate for Logic in Computer Science. Some material in F.2.1 and F.2.2, may also be appropriate here, but is more likely to have Data Structures and Algorithms as the primary subject area.
-
-cs.CE (Computational Engineering, Finance, and Science)
-Covers applications of computer science to the mathematical modeling of complex systems i
+1.  Lấy danh sách các topic ID (ví dụ: `['cs.AI', 'cs.CV']`).
+2.  Chuyển nó thành một chuỗi query duy nhất: `cat:cs.AI OR cat:cs.CV`.
+3.  Gửi chuỗi này vào tham số `search_query` của API arXiv, cùng với các tham số sắp xếp và phân trang.
+4.  Xử lý kết quả XML trả về.
