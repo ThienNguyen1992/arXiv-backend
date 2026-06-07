@@ -71,8 +71,11 @@ export class SchedulerService {
             journal_ref: null, // Không có sẵn trong XML trả về mặc định
             license: null,
             comments: null,
-            categories: paper.allCategories.join(' '),
+            categories: paper.allCategories,
+            primary_category: paper.allCategories.length > 0 ? paper.allCategories[0].split('.')[0] : null,
             published_at: paper.publishedDate ? new Date(paper.publishedDate) : new Date(),
+            published_year: paper.publishedDate ? new Date(paper.publishedDate).getFullYear() : new Date().getFullYear(),
+            published_month: paper.publishedDate ? new Date(paper.publishedDate).getMonth() + 1 : new Date().getMonth() + 1,
             updated_at: paper.updatedDate ? new Date(paper.updatedDate) : new Date(),
             created_at: new Date(),
             current_version: 1,

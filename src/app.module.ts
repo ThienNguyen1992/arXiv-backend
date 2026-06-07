@@ -11,6 +11,7 @@ import { CategoriesModule } from './categories/categories.module';
 import { DatabaseModule } from './database/database.module';
 import { DataImportModule } from './data-import/data-import.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { StatisticsModule } from './statistics/statistics.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     CategoriesModule,
     DatabaseModule,
     DataImportModule,
+    StatisticsModule,
   ],
 })
 export class AppModule {}
