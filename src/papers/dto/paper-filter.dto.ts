@@ -49,4 +49,13 @@ export class PaperFilterDto extends PaginationQueryDto {
   @IsOptional()
   @IsString()
   author?: string;
+
+  @ApiPropertyOptional({
+    description: 'Sort by field (date or score). Default is date.',
+    enum: ['date', 'score'],
+    example: 'score',
+  })
+  @IsOptional()
+  @IsString()
+  sortBy?: 'date' | 'score';
 }

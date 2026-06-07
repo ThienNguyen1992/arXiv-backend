@@ -4,12 +4,12 @@ import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { User } from './entities/user.entity';
 import { Topic } from '../topics/entities/topic.entity';
-import { Paper } from '../papers/entities/paper.entity';
 import { PapersModule } from '../papers/papers.module';
 import { UserPaperHistory } from './entities/user-paper-history.entity';
+import { UserFavorite } from './entities/user-favorite.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, Topic, Paper, UserPaperHistory]), PapersModule],
+  imports: [TypeOrmModule.forFeature([User, Topic, UserPaperHistory, UserFavorite]), PapersModule],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

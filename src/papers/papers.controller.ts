@@ -43,6 +43,7 @@ export class PapersController {
   @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in both title and author' })
   @ApiQuery({ name: 'title', required: false, example: 'neural networks', description: 'Search only in title' })
   @ApiQuery({ name: 'author', required: false, example: 'Andrew Ng', description: 'Search only in author' })
+  @ApiQuery({ name: 'sortBy', required: false, enum: ['date', 'score'], description: 'Sort by date or score (default is date)' })
   searchElasticsearch(@Query() query: PaperFilterDto) {
     return this.papersService.searchElasticsearch(query);
   }

@@ -126,19 +126,27 @@ export class PapersService {
 
     const esQuery = must.length > 0 ? { bool: { must } } : { match_all: {} };
 
+    const sort: any[] = [];
+    if (query.sortBy === 'score') {
+      sort.push({ score: { order: 'desc', unmapped_type: 'float' } });
+    } else {
+      sort.push({ published_at: { order: 'desc', unmapped_type: 'date' } });
+    }
+
     try {
       const response = await this.elasticsearchService.search({
         index: 'papers',
         from: skip,
         size: size,
         query: esQuery,
-        sort: [
-          { published_at: { order: 'desc', unmapped_type: 'date' } }
-        ]
+        sort: sort
       });
 
       const total = response.hits.total ? (typeof response.hits.total === 'number' ? response.hits.total : response.hits.total.value) : 0;
-      const data = response.hits.hits.map(hit => hit._source);
+      const data = response.hits.hits.map(hit => ({
+        ...(hit._source as Record<string, any>),
+        es_score: hit._score,
+      }));
 
       return {
         data,
@@ -151,6 +159,35 @@ export class PapersService {
       };
     } catch (error) {
       throw new InternalServerErrorException(`Elasticsearch search failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Fetch a list of papers from Elasticsearch by a list of arxiv_ids.
+   * Preserves the input order (e.g. most-recently-favorited first).
+   */
+  async getElasticsearchPapersByArxivIds(arxivIds: string[]): Promise<any[]> {
+    if (!arxivIds || arxivIds.length === 0) return [];
+
+    try {
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        size: arxivIds.length,
+        query: {
+          terms: { arxiv_id: arxivIds },
+        },
+      });
+
+      // Build a map for O(1) lookup so we can return in original order
+      const map = new Map<string, any>();
+      for (const hit of response.hits.hits) {
+        const src = hit._source as Record<string, any>;
+        map.set(src['arxiv_id'], { ...src, es_score: hit._score });
+      }
+
+      return arxivIds.map(id => map.get(id)).filter(Boolean);
+    } catch (error) {
+      throw new InternalServerErrorException(`Elasticsearch fetch by arxiv ids failed: ${error.message}`);
     }
   }
 
