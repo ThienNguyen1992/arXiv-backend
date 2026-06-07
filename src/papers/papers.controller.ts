@@ -5,6 +5,7 @@ import { UpdatePaperDto } from './dto/update-paper.dto';
 import { CreatePaperVersionDto } from './dto/create-paper-version.dto';
 import { AddPaperTopicDto } from './dto/add-paper-topic.dto';
 import { ArxivPapersQueryDto } from './dto/arxiv-papers-query.dto';
+import { ArxivTimeQueryDto } from './dto/arxiv-time-query.dto';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 import { PaperFilterDto } from './dto/paper-filter.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
@@ -34,6 +35,18 @@ export class PapersController {
     return this.papersService.findAll(query);
   }
 
+  @Get('es/search')
+  @ApiOperation({ summary: 'Get papers from Elasticsearch. Supports pagination, topic filter, and text search.' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'size', required: false, example: 20 })
+  @ApiQuery({ name: 'topics', required: false, isArray: true, example: ['cs.AI', 'cs.LG'], description: 'Filter by topic codes' })
+  @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in both title and author' })
+  @ApiQuery({ name: 'title', required: false, example: 'neural networks', description: 'Search only in title' })
+  @ApiQuery({ name: 'author', required: false, example: 'Andrew Ng', description: 'Search only in author' })
+  searchElasticsearch(@Query() query: PaperFilterDto) {
+    return this.papersService.searchElasticsearch(query);
+  }
+
   @Get('arxiv/search')
   @ApiOperation({ summary: 'Fetch papers from arXiv by topic codes without saving to database' })
   @ApiQuery({ name: 'topics', required: true, example: 'cs.AI,cs.CV,cs.LG' })
@@ -41,6 +54,16 @@ export class PapersController {
   @ApiQuery({ name: 'size', required: false, example: 20 })
   searchArxivByTopics(@Query() query: ArxivPapersQueryDto) {
     return this.papersService.fetchArxivPapersByTopicsQuery(query);
+  }
+
+  @Get('arxiv/time-range')
+  @ApiOperation({ summary: 'Fetch papers from arXiv within a specific time range' })
+  @ApiQuery({ name: 'startDate', required: true, example: '2024-01-01', description: 'Start date in YYYY-MM-DD format' })
+  @ApiQuery({ name: 'endDate', required: true, example: '2024-12-31', description: 'End date in YYYY-MM-DD format' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'size', required: false, example: 20 })
+  searchArxivByTimeRange(@Query() query: ArxivTimeQueryDto) {
+    return this.papersService.fetchArxivPapersByTimeRange(query);
   }
 
   @Get('arxiv/feed')

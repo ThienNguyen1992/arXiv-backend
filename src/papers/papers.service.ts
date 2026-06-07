@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ElasticsearchService } from '@nestjs/elasticsearch';
 import { Repository } from 'typeorm';
 import { CreatePaperDto } from './dto/create-paper.dto';
 import { UpdatePaperDto } from './dto/update-paper.dto';
@@ -12,6 +13,7 @@ import { PaperFilterDto } from './dto/paper-filter.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { getPagination, toPaginatedResponse } from '../common/pagination';
 import { ArxivPapersQueryDto } from './dto/arxiv-papers-query.dto';
+import { ArxivTimeQueryDto } from './dto/arxiv-time-query.dto';
 import { User } from '../users/entities/user.entity';
 import { Topic } from '../topics/entities/topic.entity';
 import { PaperScorer, PaperScoringInput } from '../common/utils/paper-score.util';
@@ -45,6 +47,7 @@ export class PapersService {
     private readonly usersRepository: Repository<User>,
     @InjectRepository(Topic)
     private readonly topicsRepository: Repository<Topic>,
+    private readonly elasticsearchService: ElasticsearchService,
   ) {}
 
   create(createPaperDto: CreatePaperDto) {
@@ -88,6 +91,69 @@ export class PapersService {
     return toPaginatedResponse(data, total, page, size);
   }
 
+  async searchElasticsearch(query: PaperFilterDto) {
+    const { page, size, skip } = getPagination(query);
+
+    const must: any[] = [];
+
+    if (query.topics && query.topics.length > 0) {
+      const topicsQuery = query.topics.join(' ');
+      must.push({
+        match: { categories: topicsQuery }
+      });
+    }
+
+    if (query.q) {
+      must.push({
+        multi_match: {
+          query: query.q,
+          fields: ['title', 'authors']
+        }
+      });
+    }
+
+    if (query.title) {
+      must.push({
+        match: { title: query.title }
+      });
+    }
+
+    if (query.author) {
+      must.push({
+        match: { authors: query.author }
+      });
+    }
+
+    const esQuery = must.length > 0 ? { bool: { must } } : { match_all: {} };
+
+    try {
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        from: skip,
+        size: size,
+        query: esQuery,
+        sort: [
+          { published_at: { order: 'desc', unmapped_type: 'date' } }
+        ]
+      });
+
+      const total = response.hits.total ? (typeof response.hits.total === 'number' ? response.hits.total : response.hits.total.value) : 0;
+      const data = response.hits.hits.map(hit => hit._source);
+
+      return {
+        data,
+        meta: {
+          page,
+          size,
+          total,
+          totalPages: Math.ceil(total / size),
+        }
+      };
+    } catch (error) {
+      throw new InternalServerErrorException(`Elasticsearch search failed: ${error.message}`);
+    }
+  }
+
   async findOne(id: string) {
     const paper = await this.papersRepository.findOne({
       where: { id },
@@ -104,6 +170,41 @@ export class PapersService {
     }
 
     return this.fetchArxivPapersByTopicCodes(topicCodes, query);
+  }
+
+  async fetchArxivPapersByTimeRange(query: ArxivTimeQueryDto) {
+    const { page, size, skip } = getPagination(query);
+    const startFormatted = query.startDate.replace(/-/g, '') + '000000';
+    const endFormatted = query.endDate.replace(/-/g, '') + '235959';
+    const searchQuery = `submittedDate:[${startFormatted} TO ${endFormatted}]`;
+    const url = new URL(this.arxivApiUrl);
+    url.searchParams.set('search_query', searchQuery);
+    url.searchParams.set('sortBy', 'submittedDate');
+    url.searchParams.set('sortOrder', 'descending');
+    url.searchParams.set('start', String(skip));
+    url.searchParams.set('max_results', String(size));
+
+    let xml: string;
+    try {
+      xml = await this.fetchTextWithTimeout(url.toString());
+    } catch (error) {
+      const message = error instanceof Error ? this.formatErrorMessage(error) : 'unknown error';
+      throw new InternalServerErrorException(`Could not fetch arXiv papers by time range: ${message}`);
+    }
+
+    const parsed = this.parseArxivXml(xml);
+
+    return {
+      data: parsed.data,
+      meta: {
+        page,
+        size,
+        total: parsed.total,
+        totalPages: Math.ceil(parsed.total / size),
+      },
+      source: url.toString(),
+      timeRange: { startDate: query.startDate, endDate: query.endDate },
+    };
   }
 
   async fetchArxivFeedForUser(userId: string, query: PaginationQueryDto) {

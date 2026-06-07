@@ -12,12 +12,16 @@ import { Topic } from '../topics/entities/topic.entity';
 import { Paper } from '../papers/entities/paper.entity';
 import { PaperTopic } from '../papers/entities/paper-topic.entity';
 import { PaperVersion } from '../papers/entities/paper-version.entity';
+import { ElasticsearchService } from '@nestjs/elasticsearch';
 
 @Injectable()
 export class DataImportService {
   private readonly logger = new Logger(DataImportService.name);
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly elasticsearchService: ElasticsearchService,
+  ) {}
 
   async importLocalData(path: string) {
     const result = await verifyLocalJsonFile(path);
@@ -249,6 +253,129 @@ export class DataImportService {
       this.logger.error(`Batch process failed: ${err.message}`, err.stack);
     } finally {
       await queryRunner.release();
+    }
+  }
+
+  async importElasticsearchLocalData(path: string) {
+    const result = await verifyLocalJsonFile(path);
+    if (!result.isValid) {
+      throw new BadRequestException(result.message);
+    }
+    
+    // Start background processing without blocking the API response
+    this.processElasticsearchFileBackground(path).catch(err => {
+      this.logger.error(`Error during ES background import: ${err.message}`, err.stack);
+    });
+    
+    return { 
+      message: 'Elasticsearch import process started in the background. Please check server logs for progress.',
+      file: path 
+    };
+  }
+
+  private async processElasticsearchFileBackground(filePath: string) {
+    this.logger.log(`Starting Elasticsearch import from ${filePath}`);
+    const fileStream = fs.createReadStream(filePath);
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity
+    });
+
+    await this.processElasticsearchStream(rl);
+  }
+
+  private async processElasticsearchStream(rl: readline.Interface) {
+    const BATCH_SIZE = 500;
+    let batch: any[] = [];
+    let count = 0;
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        batch.push(data);
+        count++;
+
+        if (batch.length >= BATCH_SIZE) {
+          await this.processElasticsearchBatch(batch);
+          this.logger.log(`ES: Processed ${count} records...`);
+          batch = [];
+        }
+      } catch (err) {
+        this.logger.error(`ES Error parsing line: ${err.message}`);
+      }
+    }
+
+    if (batch.length > 0) {
+      await this.processElasticsearchBatch(batch);
+      this.logger.log(`ES: Processed ${count} records. Import complete.`);
+    }
+  }
+
+  private async processElasticsearchBatch(batch: any[]) {
+    try {
+      const scorer = new PaperScorer();
+      
+      const operations = batch.flatMap(item => {
+        const publishedDate = item.versions && item.versions.length > 0 ? new Date(item.versions[0].created) : new Date();
+        const updatedDate = item.update_date ? new Date(item.update_date) : publishedDate;
+        
+        const scoreInput: PaperScoringInput = {
+          published_date: publishedDate,
+          updated_date: updatedDate,
+          journal_ref: item['journal-ref'],
+          abstract: item.abstract,
+          comments: item.comments,
+          version: item.versions ? item.versions.length : 1,
+          authors: []
+        };
+        const scoreResult = scorer.calculateScore(scoreInput);
+
+        return [
+          { index: { _index: 'papers', _id: item.id } },
+          {
+            arxiv_id: item.id,
+            title: item.title ? item.title.replace(/\s+/g, ' ').trim().substring(0, 500) : 'Untitled',
+            abstract: item.abstract ? item.abstract.replace(/\s+/g, ' ').trim() : '',
+            authors: item.authors ? item.authors : null,
+            authors_parsed: item.authors_parsed ? item.authors_parsed : null,
+            doi: item.doi ? item.doi.substring(0, 100) : null,
+            journal_ref: item['journal-ref'] ? item['journal-ref'].substring(0, 255) : null,
+            license: item.license ? item.license : null,
+            comments: item.comments ? item.comments : null,
+            categories: item.categories ? item.categories.split(' ') : [],
+            primary_category: item.categories ? item.categories.split(' ')[0].split('.')[0] : null,
+            published_at: publishedDate,
+            published_year: publishedDate.getFullYear(),
+            published_month: publishedDate.getMonth() + 1,
+            updated_at: updatedDate,
+            created_at: new Date(),
+            current_version: item.versions ? item.versions.length : 1,
+            score: scoreResult.total_score,
+            pdf_url: `https://arxiv.org/pdf/${item.id}.pdf`
+          }
+        ];
+      });
+
+      const bulkResponse = await this.elasticsearchService.bulk({ refresh: true, operations });
+
+      if (bulkResponse.errors) {
+        const erroredDocuments: any[] = [];
+        bulkResponse.items.forEach((action, i) => {
+          const operation = Object.keys(action)[0];
+          if (action[operation].error) {
+            erroredDocuments.push({
+              status: action[operation].status,
+              error: action[operation].error,
+              operation: operations[i * 2],
+              document: operations[i * 2 + 1]
+            });
+          }
+        });
+        this.logger.error(`Some ES documents failed: ${JSON.stringify(erroredDocuments)}`);
+      }
+    } catch (err) {
+      this.logger.error(`ES Batch process failed: ${err.message}`, err.stack);
     }
   }
 }

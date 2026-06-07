@@ -28,4 +28,13 @@ export class DataImportController {
   async importUrlData(@Body() importUrlDataDto: ImportUrlDataDto) {
     return await this.dataImportService.importUrlData(importUrlDataDto.url);
   }
+  @Post('elasticsearch/local')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Import data from a local JSON file specifically to Elasticsearch (runs in background)' })
+  @ApiBody({ type: ImportLocalDataDto })
+  @ApiResponse({ status: HttpStatus.ACCEPTED, description: 'File validated successfully. Elasticsearch import started in background.' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid path or file does not exist.' })
+  async importElasticsearchLocalData(@Body() importLocalDataDto: ImportLocalDataDto) {
+    return await this.dataImportService.importElasticsearchLocalData(importLocalDataDto.path);
+  }
 }
