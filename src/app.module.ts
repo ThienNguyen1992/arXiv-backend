@@ -10,10 +10,11 @@ import { AiModule } from './ai/ai.module';
 import { CategoriesModule } from './categories/categories.module';
 import { DatabaseModule } from './database/database.module';
 import { DataImportModule } from './data-import/data-import.module';
-import { HelloModule } from './hello/hello.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
     }),
@@ -37,7 +38,6 @@ import { HelloModule } from './hello/hello.module';
     CategoriesModule,
     DatabaseModule,
     DataImportModule,
-    HelloModule,
   ],
 })
 export class AppModule {}
