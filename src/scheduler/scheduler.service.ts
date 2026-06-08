@@ -41,8 +41,8 @@ export class SchedulerService {
       
       this.logger.log(`Fetched ${papers.length} papers from arXiv.`);
 
-      let newCount = 0;
       let duplicateCount = 0;
+      const documents: any[] = [];
 
       for (const paper of papers) {
         // Kiểm tra xem bài báo đã có trong ES chưa (dựa vào _id)
@@ -52,42 +52,54 @@ export class SchedulerService {
         });
 
         if (exists) {
-          this.logger.log(`[DUPLICATE] Bài báo đã tồn tại trong ES: ${paper.id} - ${paper.title}`);
+          this.logger.log(`[EXACT DUPLICATE] Bài báo đã tồn tại trong ES: ${paper.id}. Bỏ qua.`);
           duplicateCount++;
           continue;
         }
 
-        // Lưu vào ES nếu chưa có (Flatten structure giống Paper Entity)
-        await this.elasticsearchService.index({
-          index: 'papers',
-          id: paper.id,
-          document: {
-            arxiv_id: paper.id,
-            title: paper.title,
-            abstract: paper.summary,
-            authors: paper.authors.join(', '),
-            authors_parsed: null, // Không có sẵn trong API
-            doi: null,
-            journal_ref: null, // Không có sẵn trong XML trả về mặc định
-            license: null,
-            comments: null,
-            categories: paper.allCategories,
-            primary_category: paper.allCategories.length > 0 ? paper.allCategories[0].split('.')[0] : null,
-            published_at: paper.publishedDate ? new Date(paper.publishedDate) : new Date(),
-            published_year: paper.publishedDate ? new Date(paper.publishedDate).getFullYear() : new Date().getFullYear(),
-            published_month: paper.publishedDate ? new Date(paper.publishedDate).getMonth() + 1 : new Date().getMonth() + 1,
-            updated_at: paper.updatedDate ? new Date(paper.updatedDate) : new Date(),
-            created_at: new Date(),
-            current_version: 1,
-            score: 0, // Sẽ được tính sau nếu cần
-            pdf_url: paper.pdfLink || `https://arxiv.org/pdf/${paper.id}.pdf`,
-          },
-        });
+        // Kiểm tra Semantic / Near Duplicate
+        const fuzzyMatches = await this.papersService.checkFuzzyDuplicate(paper.title, paper.summary);
         
-        newCount++;
+        let isDuplicated = false;
+        let parentIdDuplicate = null;
+        let reason: string | null = null;
+
+        if (fuzzyMatches && fuzzyMatches.length > 0) {
+           isDuplicated = true;
+           parentIdDuplicate = (fuzzyMatches[0].paper as any).arxiv_id;
+           reason = "Fuzzy duplicate with threshold > 85%";
+           this.logger.log(`[NEAR DUPLICATE] Bài báo ${paper.id} giống với ${parentIdDuplicate}`);
+        }
+
+        documents.push({
+          arxiv_id: paper.id,
+          title: paper.title,
+          abstract: paper.summary,
+          authors: paper.authors.join(', '),
+          authors_parsed: null, // Không có sẵn trong API
+          doi: null,
+          journal_ref: null, // Không có sẵn trong XML trả về mặc định
+          license: null,
+          comments: null,
+          categories: paper.allCategories,
+          primary_category: paper.allCategories.length > 0 ? paper.allCategories[0].split('.')[0] : null,
+          published_at: paper.publishedDate ? new Date(paper.publishedDate) : new Date(),
+          published_year: paper.publishedDate ? new Date(paper.publishedDate).getFullYear() : new Date().getFullYear(),
+          published_month: paper.publishedDate ? new Date(paper.publishedDate).getMonth() + 1 : new Date().getMonth() + 1,
+          updated_at: paper.updatedDate ? new Date(paper.updatedDate) : new Date(),
+          created_at: new Date(),
+          current_version: 1,
+          score: 0, // Sẽ được tính sau nếu cần
+          pdf_url: paper.pdfLink || `https://arxiv.org/pdf/${paper.id}.pdf`,
+          is_duplicated: isDuplicated,
+          parent_id_duplicate: parentIdDuplicate,
+          duplicate_reason: reason
+        });
       }
 
-      this.logger.log(`Cronjob finished. Added: ${newCount}, Duplicates skipped: ${duplicateCount}`);
+      const { newCount: importedCount, duplicateCount: skippedInBulk } = await this.papersService.bulkCreatePapers(documents);
+
+      this.logger.log(`Cronjob finished. Processed: ${documents.length}, Added: ${importedCount}, Exact Duplicates skipped: ${duplicateCount + skippedInBulk}`);
     } catch (error) {
       this.logger.error(`Error in daily arXiv fetch: ${error.message}`, error.stack);
     }

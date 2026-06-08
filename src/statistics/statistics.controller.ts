@@ -7,58 +7,93 @@ import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 export class StatisticsController {
   constructor(private readonly statisticsService: StatisticsService) {}
 
-  @Get('overview')
-  @ApiOperation({ summary: 'Get overview statistics (total papers, top categories, date range)' })
-  getOverview() {
-    return this.statisticsService.getOverview();
-  }
+  // ==========================================
+  // I. TRENDS DASHBOARD (Visualization)
+  // ==========================================
 
-  @Get('topics')
-  @ApiOperation({ summary: 'Get top popular topics' })
-  @ApiQuery({ name: 'limit', required: false, example: 20 })
-  getTopTopics(@Query('limit') limit?: string) {
-    return this.statisticsService.getTopTopics(limit ? parseInt(limit, 10) : 20);
-  }
-
-  @Get('trends')
-  @ApiOperation({ summary: 'Get temporal trends for specific topics' })
-  @ApiQuery({ name: 'topics', required: false, example: 'cs.AI,cs.LG', description: 'Comma separated topic codes' })
-  @ApiQuery({ name: 'interval', required: false, example: 'year', description: 'year or month' })
-  @ApiQuery({ name: 'fromYear', required: false, example: 2019 })
-  @ApiQuery({ name: 'toYear', required: false, example: 2024 })
-  getTrends(
+  @Get('dashboard/topic-velocity')
+  @ApiOperation({ summary: 'Biểu đồ đường: Tốc độ ra bài của các chủ đề (Topic Velocity)' })
+  @ApiQuery({ name: 'topics', required: false, example: 'cs.AI,cs.CV', description: 'Comma separated topic codes' })
+  @ApiQuery({ name: 'interval', required: false, example: 'month', description: 'day, week, month, or year' })
+  getTopicVelocity(
     @Query('topics') topics?: string,
-    @Query('interval') interval?: string,
-    @Query('fromYear') fromYear?: string,
-    @Query('toYear') toYear?: string
+    @Query('interval') interval?: string
   ) {
     const topicCodes = topics ? topics.split(',') : [];
-    return this.statisticsService.getTrends(
-      topicCodes,
-      interval || 'year',
-      fromYear ? parseInt(fromYear, 10) : undefined,
-      toYear ? parseInt(toYear, 10) : undefined
-    );
+    return this.statisticsService.getTopicVelocity(topicCodes, interval || 'month');
   }
 
-  @Get('emerging')
-  @ApiOperation({ summary: 'Detect emerging topics with high growth rate' })
-  @ApiQuery({ name: 'threshold', required: false, example: 50, description: 'Minimum growth rate %' })
-  @ApiQuery({ name: 'minPapers', required: false, example: 10, description: 'Minimum papers in recent years' })
-  getEmergingTopics(
-    @Query('threshold') threshold?: string,
-    @Query('minPapers') minPapers?: string
+  @Get('dashboard/keywords-cloud')
+  @ApiOperation({ summary: 'Word Cloud: Các từ khóa hot nhất từ abstract (Hot Keywords)' })
+  @ApiQuery({ name: 'days', required: false, example: 30, description: 'Số ngày gần nhất' })
+  @ApiQuery({ name: 'size', required: false, example: 50, description: 'Số lượng từ khóa' })
+  getHotKeywordsCloud(
+    @Query('days') days?: string,
+    @Query('size') size?: string
   ) {
-    return this.statisticsService.getEmergingTopics(
-      threshold ? parseFloat(threshold) : 50,
-      minPapers ? parseInt(minPapers, 10) : 10
+    return this.statisticsService.getHotKeywordsCloud(
+      days ? parseInt(days, 10) : 30,
+      size ? parseInt(size, 10) : 50
     );
   }
 
-  @Get('trending')
-  @ApiOperation({ summary: 'Get overall trending topics based on recency, growth, and volume' })
+  @Get('dashboard/activity-heatmap')
+  @ApiOperation({ summary: 'Heatmap: Bản đồ nhiệt giao thoa giữa các chủ đề (Activity Map)' })
+  @ApiQuery({ name: 'limit', required: false, example: 10, description: 'Top N chủ đề' })
+  getActivityHeatmap(@Query('limit') limit?: string) {
+    return this.statisticsService.getActivityHeatmap(limit ? parseInt(limit, 10) : 10);
+  }
+
+  @Get('dashboard/topic-race')
+  @ApiOperation({ summary: 'Bar Chart Race: Hoạt ảnh đua thứ hạng chủ đề qua các năm/tháng' })
+  @ApiQuery({ name: 'interval', required: false, example: 'year', description: 'month or year' })
+  getCategoryRace(@Query('interval') interval?: string) {
+    return this.statisticsService.getCategoryRace(interval || 'year');
+  }
+
+  // ==========================================
+  // II. LEADERBOARD
+  // ==========================================
+
+  @Get('leaderboard/trending-papers')
+  @ApiOperation({ summary: 'Leaderboard: Top Papers có điểm số cao nhất' })
+  @ApiQuery({ name: 'timeframe', required: false, example: 'month', description: 'today, week, month, all' })
   @ApiQuery({ name: 'limit', required: false, example: 10 })
-  getTrendingScore(@Query('limit') limit?: string) {
-    return this.statisticsService.getTrendingScore(limit ? parseInt(limit, 10) : 10);
+  getTrendingPapers(
+    @Query('timeframe') timeframe?: string,
+    @Query('limit') limit?: string
+  ) {
+    return this.statisticsService.getTrendingPapers(
+      timeframe || 'month',
+      limit ? parseInt(limit, 10) : 10
+    );
+  }
+
+  @Get('leaderboard/top-authors')
+  @ApiOperation({ summary: 'Leaderboard: Top Tác giả có nhiều cống hiến nhất' })
+  @ApiQuery({ name: 'timeframe', required: false, example: 'all', description: 'today, week, month, all' })
+  @ApiQuery({ name: 'limit', required: false, example: 10 })
+  getTopAuthors(
+    @Query('timeframe') timeframe?: string,
+    @Query('limit') limit?: string
+  ) {
+    return this.statisticsService.getTopAuthors(
+      timeframe || 'all',
+      limit ? parseInt(limit, 10) : 10
+    );
+  }
+
+  @Get('leaderboard/rising-topics')
+  @ApiOperation({ summary: 'Leaderboard: Top Chủ đề bứt phá (Tăng trưởng % nhanh nhất)' })
+  @ApiQuery({ name: 'timeframe', required: false, example: 'month', description: 'week, month, year' })
+  @ApiQuery({ name: 'limit', required: false, example: 10 })
+  getRisingTopics(
+    @Query('timeframe') timeframe?: string,
+    @Query('limit') limit?: string
+  ) {
+    return this.statisticsService.getRisingTopics(
+      timeframe || 'month',
+      limit ? parseInt(limit, 10) : 10
+    );
   }
 }

@@ -129,15 +129,13 @@ export class UsersService {
   // --- Favorite Papers ---
   async getFavorites(userId: string, query: PaginationQueryDto) {
     const user = await this.findOne(userId);
-    const { page, size, skip, take } = getPagination(query);
+    const { page, size } = getPagination(query);
     
-    // Sort favorite papers by updated_at or created_at
-    const favorites = [...(user.favorite_papers ?? [])].sort(
-      (a, b) => b.published_at.getTime() - a.published_at.getTime()
-    );
-    const data = favorites.slice(skip, skip + take);
+    // Extract arxiv_ids from favorite_papers relation
+    const arxivIds = (user.favorite_papers ?? []).map(p => p.arxiv_id).filter(Boolean);
 
-    return toPaginatedResponse(data, favorites.length, page, size);
+    // Fetch the actual data from Elasticsearch
+    return this.papersService.getFavoritesFromElasticsearch(arxivIds, page, size);
   }
 
   async addFavorite(userId: string, paperIdOrArxivId: string) {
@@ -189,6 +187,7 @@ export class UsersService {
   async getHistory(userId: string, query: PaginationQueryDto) {
     const { page, size, skip, take } = getPagination(query);
 
+    // 1. Fetch paginated history from Postgres to preserve exact viewed_at order
     const [history, total] = await this.historyRepository.findAndCount({
       where: { user_id: userId },
       relations: ['paper'],
@@ -197,7 +196,12 @@ export class UsersService {
       take,
     });
 
-    const data = history.map(h => h.paper);
+    // 2. Extract arxiv_ids preserving the DESC order
+    const arxivIds = history.map(h => h.paper?.arxiv_id).filter(Boolean);
+
+    // 3. Fetch exact matching data from Elasticsearch in the same order
+    const data = await this.papersService.getMultipleFromElasticsearchOrdered(arxivIds);
+
     return toPaginatedResponse(data, total, page, size);
   }
 
