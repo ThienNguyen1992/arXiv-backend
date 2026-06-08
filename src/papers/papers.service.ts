@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { Logger, BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
 import { Repository } from 'typeorm';
@@ -34,6 +34,7 @@ export interface ArxivPaperDto {
 
 @Injectable()
 export class PapersService {
+  private readonly logger = new Logger(PapersService.name);
   private readonly arxivApiUrl = 'https://export.arxiv.org/api/query';
 
   constructor(
@@ -124,7 +125,12 @@ export class PapersService {
       });
     }
 
-    const esQuery = must.length > 0 ? { bool: { must } } : { match_all: {} };
+    const esQuery = {
+      bool: {
+        must: must.length > 0 ? must : [{ match_all: {} }],
+        must_not: [{ term: { is_duplicated: true } }]
+      }
+    };
 
     try {
       const response = await this.elasticsearchService.search({
@@ -137,7 +143,7 @@ export class PapersService {
         ]
       });
 
-      const total = response.hits.total ? (typeof response.hits.total === 'number' ? response.hits.total : response.hits.total.value) : 0;
+      const total = response.hits.total ? (typeof response.hits.total === 'number' ? response.hits.total : response.hits.total?.['value'] || 0) : 0;
       const data = response.hits.hits.map(hit => hit._source);
 
       return {
@@ -212,7 +218,6 @@ export class PapersService {
       where: { id: userId },
       relations: ['topics'],
     });
-    console.log("🚀 ~ PapersService ~ fetchArxivFeedForUser ~ user:", user)
 
     if (!user) {
       throw new NotFoundException(`User #${userId} not found`);
@@ -224,7 +229,6 @@ export class PapersService {
     if (topicCodes.length === 0) {
       fallback = true;
       topicCodes = await this.getRandomTopicCodes(5);
-      console.log("🚀 ~ PapersService ~ fetchArxivFeedForUser ~ topicCodes:", topicCodes)
     }
 
     const result = await this.fetchArxivPapersByTopicCodes(topicCodes, query);
@@ -253,7 +257,6 @@ export class PapersService {
       return paper;
     }
 
-    // Fetch from arxiv
     const url = new URL(this.arxivApiUrl);
     url.searchParams.set('id_list', arxivId);
     let xml: string;
@@ -330,9 +333,8 @@ export class PapersService {
     return { message: `Successfully updated scores for ${updatedCount} papers` };
   }
 
-  // --- Versions ---
   async addVersion(paperId: string, dto: CreatePaperVersionDto) {
-    await this.findOne(paperId); // ensure paper exists
+    await this.findOne(paperId);
     const version = this.versionsRepository.create({ ...dto, paper_id: paperId });
     return this.versionsRepository.save(version);
   }
@@ -350,7 +352,6 @@ export class PapersService {
     return toPaginatedResponse(data, total, page, size);
   }
 
-  // --- Topics ---
   async addTopic(paperId: string, dto: AddPaperTopicDto) {
     await this.findOne(paperId);
     const paperTopic = this.paperTopicsRepository.create({ paper_id: paperId, ...dto });
@@ -579,5 +580,278 @@ export class PapersService {
     }
 
     return error.message;
+  }
+
+  async findRelatedPapers(id: string, limit: number = 5) {
+    try {
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        size: limit,
+        query: {
+          bool: {
+            must: [
+              {
+                more_like_this: {
+                  fields: ['title', 'abstract', 'categories'],
+                  like: [{ _index: 'papers', _id: id }],
+                  min_term_freq: 1,
+                  max_query_terms: 25
+                }
+              }
+            ],
+            must_not: [
+              { term: { is_duplicated: true } }
+            ]
+          }
+        }
+      });
+      return response.hits.hits.map(hit => hit._source);
+    } catch (error) {
+      this.logger.error(`Elasticsearch MLT failed: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Elasticsearch MLT failed: ${error.message}`);
+    }
+  }
+
+  async getDuplicates(page: number, size: number, parentId?: string) {
+    const { skip } = getPagination({ page, size } as any);
+    
+    const mustClauses: any[] = [
+      { term: { is_duplicated: true } }
+    ];
+
+    if (parentId) {
+      mustClauses.push({
+        match: { parent_id_duplicate: parentId }
+      });
+    }
+
+    try {
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        from: skip,
+        size: size,
+        query: {
+          bool: {
+            must: mustClauses
+          }
+        },
+        sort: [
+          { created_at: { order: 'desc' } }
+        ]
+      });
+
+      const total = response.hits.total?.['value'] || 0;
+      const data = response.hits.hits.map(hit => hit._source);
+      return toPaginatedResponse(data, total, page, size);
+    } catch (error) {
+      this.logger.error(`Elasticsearch get duplicates failed: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Failed to fetch duplicates: ${error.message}`);
+    }
+  }
+
+  async checkFuzzyDuplicate(title: string, abstract: string) {
+    try {
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        size: 5,
+        query: {
+          bool: {
+            must: [
+              {
+                more_like_this: {
+                  fields: ['title', 'abstract'],
+                  like: `${title} ${abstract}`,
+                  min_term_freq: 1,
+                  min_doc_freq: 1,
+                  minimum_should_match: '85%'
+                }
+              }
+            ],
+            must_not: [
+              { term: { is_duplicated: true } }
+            ]
+          }
+        }
+      });
+      return response.hits.hits.map(hit => ({
+        score: hit._score,
+        paper: hit._source
+      }));
+    } catch (error) {
+      this.logger.error(`Elasticsearch Fuzzy Duplicate failed: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Elasticsearch Fuzzy Duplicate failed: ${error.message}`);
+    }
+  }
+
+  async bulkCreatePapers(documents: any[]) {
+    if (!documents || documents.length === 0) return { newCount: 0, duplicateCount: 0 };
+
+    const operations = documents.flatMap(doc => [
+      { create: { _index: 'papers', _id: doc.arxiv_id } },
+      doc
+    ]);
+
+    try {
+      const bulkResponse = await this.elasticsearchService.bulk({ refresh: true, operations });
+      let newCount = documents.length;
+      let duplicateCount = 0;
+
+      if (bulkResponse.errors) {
+        const erroredDocuments: any[] = [];
+        bulkResponse.items.forEach((action, i) => {
+          const operation = Object.keys(action)[0];
+          if (action[operation].error) {
+            if (action[operation].status === 409) {
+              duplicateCount++;
+              newCount--;
+            } else {
+              newCount--;
+              erroredDocuments.push({
+                status: action[operation].status,
+                error: action[operation].error,
+                arxiv_id: documents[i]?.arxiv_id,
+              });
+            }
+          }
+        });
+
+        if (erroredDocuments.length > 0) {
+          this.logger.error(`Some ES documents failed with non-duplicate errors: ${JSON.stringify(erroredDocuments)}`);
+        }
+      }
+
+      return { newCount, duplicateCount };
+    } catch (err) {
+      this.logger.error(`ES Batch process failed: ${err.message}`, err.stack);
+      return { newCount: 0, duplicateCount: 0 };
+    }
+  }
+
+  async findOneFromElasticsearch(id: string) {
+    try {
+      const response = await this.elasticsearchService.get({
+        index: 'papers',
+        id: id
+      });
+      return response._source;
+    } catch (error) {
+      if (error.meta && error.meta.statusCode === 404) {
+        throw new NotFoundException(`Paper with ID ${id} not found in Elasticsearch`);
+      }
+      throw new InternalServerErrorException(`Elasticsearch get failed: ${error.message}`);
+    }
+  }
+
+  async getFavoritesFromElasticsearch(arxivIds: string[], page: number, size: number) {
+    if (!arxivIds || arxivIds.length === 0) {
+      return { data: [], meta: { page, size, total: 0, totalPages: 0 } };
+    }
+    const { skip } = getPagination({ page, size } as any);
+    const response = await this.elasticsearchService.search({
+      index: 'papers',
+      from: skip,
+      size: size,
+      query: { terms: { _id: arxivIds } }
+    });
+    const total = typeof response.hits.total === 'number' ? response.hits.total : response.hits.total?.['value'] || 0;
+    const data = response.hits.hits.map(hit => hit._source);
+    return toPaginatedResponse(data, total, page, size);
+  }
+
+  async getMultipleFromElasticsearchOrdered(arxivIds: string[]) {
+    if (!arxivIds || arxivIds.length === 0) return [];
+    const response = await this.elasticsearchService.search({
+      index: 'papers',
+      size: arxivIds.length,
+      query: { terms: { _id: arxivIds } }
+    });
+    const dataMap = new Map();
+    response.hits.hits.forEach(hit => dataMap.set(hit._id, hit._source));
+    return arxivIds.map(id => dataMap.get(id)).filter(Boolean);
+  }
+  async getRelatedTopics(coreTopic: string, limit: number = 3): Promise<string[]> {
+    try {
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        size: 0,
+        query: {
+          bool: {
+            must: [{ match: { categories: coreTopic } }],
+            must_not: [{ term: { is_duplicated: true } }]
+          }
+        },
+        aggs: {
+          related_topics: {
+            terms: { field: 'categories.keyword', size: limit + 1 }
+          }
+        }
+      });
+      const buckets = (response.aggregations?.related_topics as any)?.buckets || [];
+      const topics = buckets.map((b: any) => b.key).filter((t: string) => t !== coreTopic);
+      return topics.slice(0, limit);
+    } catch (error) {
+      this.logger.error(`Failed to get related topics for ${coreTopic}: ${error.message}`);
+      return [];
+    }
+  }
+
+  async getYouMightLike(id: string) {
+    try {
+      // 1. Get current paper
+      const paper = await this.findOneFromElasticsearch(id) as any;
+      if (!paper || !paper.categories || paper.categories.length === 0) {
+        return [];
+      }
+      
+      const coreTopic = paper.categories[0];
+
+      // 2. Find related topics
+      const relatedTopics = await this.getRelatedTopics(coreTopic, 3);
+
+      // 3. Query 2 papers from core topic (excluding current paper)
+      const corePromise = this.elasticsearchService.search({
+        index: 'papers',
+        size: 2,
+        query: {
+          bool: {
+            must: [{ match: { categories: coreTopic } }],
+            must_not: [{ term: { _id: id } }, { term: { is_duplicated: true } }]
+          }
+        },
+        sort: [{ score: { order: 'desc' } }, { published_at: { order: 'desc' } }]
+      });
+
+      // 4. Query 8 papers from related topics (excluding current paper)
+      const relatedPromise = relatedTopics.length > 0 ? this.elasticsearchService.search({
+        index: 'papers',
+        size: 8,
+        query: {
+          bool: {
+            must: [{ terms: { 'categories.keyword': relatedTopics } }],
+            must_not: [{ term: { _id: id } }, { term: { is_duplicated: true } }]
+          }
+        },
+        sort: [{ score: { order: 'desc' } }, { published_at: { order: 'desc' } }]
+      }) : Promise.resolve({ hits: { hits: [] } });
+
+      const [coreResponse, relatedResponse] = await Promise.all([corePromise, relatedPromise]);
+
+      const corePapers = coreResponse.hits.hits.map(h => h._source);
+      const relatedPapers = relatedResponse.hits.hits.map(h => h._source);
+
+      // 5. Combine and shuffle
+      const combined = [...corePapers, ...relatedPapers];
+      
+      // Fisher-Yates Shuffle
+      for (let i = combined.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [combined[i], combined[j]] = [combined[j], combined[i]];
+      }
+
+      return combined;
+    } catch (error) {
+      this.logger.error(`Failed to get You Might Like for ${id}: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Failed to get recommendations: ${error.message}`);
+    }
   }
 }

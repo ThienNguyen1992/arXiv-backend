@@ -5,317 +5,266 @@ import { ElasticsearchService } from '@nestjs/elasticsearch';
 export class StatisticsService {
   constructor(private readonly elasticsearchService: ElasticsearchService) {}
 
-  async getOverview() {
-    try {
-      const response = await this.elasticsearchService.search({
-        index: 'papers',
-        size: 0,
-        aggs: {
-          primary_categories: {
-            terms: {
-              field: 'primary_category.keyword',
-              size: 20
-            }
-          },
-          min_date: {
-            min: { field: 'published_at' }
-          },
-          max_date: {
-            max: { field: 'published_at' }
-          }
-        }
-      } as any);
+  // ==========================================
+  // I. TRENDS DASHBOARD (Visualization)
+  // ==========================================
 
-      const total = response.hits.total ? (typeof response.hits.total === 'number' ? response.hits.total : (response.hits.total as any).value) : 0;
-      const buckets = (response.aggregations as any)?.primary_categories?.buckets || [];
-      
-      const topCategories = buckets.map((b: any) => ({
-        category: b.key,
-        count: b.doc_count,
-        percentage: total > 0 ? ((b.doc_count / total) * 100).toFixed(2) : 0
-      }));
-
-      return {
-        total_papers: total,
-        date_range: {
-          from: (response.aggregations as any)?.min_date?.value_as_string || null,
-          to: (response.aggregations as any)?.max_date?.value_as_string || null,
-        },
-        top_categories: topCategories
-      };
-    } catch (error: any) {
-      throw new InternalServerErrorException(`ES Error: ${error.message}`);
-    }
-  }
-
-  async getTopTopics(limit: number = 20) {
-    try {
-      const response = await this.elasticsearchService.search({
-        index: 'papers',
-        size: 0,
-        aggs: {
-          topics: {
-            terms: {
-              field: 'categories.keyword',
-              size: limit,
-              order: { _count: 'desc' }
-            }
-          }
-        }
-      } as any);
-      const total = response.hits.total ? (typeof response.hits.total === 'number' ? response.hits.total : (response.hits.total as any).value) : 0;
-      const buckets = (response.aggregations as any)?.topics?.buckets || [];
-      
-      return {
-        topics: buckets.map((b: any) => ({
-          topic: b.key,
-          count: b.doc_count,
-          percentage: total > 0 ? ((b.doc_count / total) * 100).toFixed(2) : 0,
-          primary_category: b.key.split('.')[0]
-        }))
-      };
-    } catch (error: any) {
-      throw new InternalServerErrorException(`ES Error: ${error.message}`);
-    }
-  }
-
-  async getTrends(topicCodes: string[], interval: string = 'year', fromYear?: number, toYear?: number) {
+  async getTopicVelocity(topics?: string[], interval: string = 'month') {
     try {
       const mustClauses: any[] = [];
-      if (topicCodes && topicCodes.length > 0) {
-        mustClauses.push({ terms: { 'categories.keyword': topicCodes } });
+      if (topics && topics.length > 0) {
+        mustClauses.push({ terms: { 'categories.keyword': topics } });
       }
-
-      if (fromYear || toYear) {
-        const rangeObj: any = {};
-        if (fromYear) rangeObj.gte = `${fromYear}-01-01`;
-        if (toYear) rangeObj.lte = `${toYear}-12-31`;
-        mustClauses.push({ range: { published_at: rangeObj } });
-      }
-
-      const queryObj = mustClauses.length > 0 ? { bool: { must: mustClauses } } : { match_all: {} };
 
       const response = await this.elasticsearchService.search({
         index: 'papers',
         size: 0,
-        query: queryObj,
+        query: mustClauses.length > 0 ? { bool: { must: mustClauses } } : { match_all: {} },
         aggs: {
           topics: {
-            terms: {
-              field: 'categories.keyword',
-              size: 50
-            },
+            terms: { field: 'categories.keyword', size: 10 },
             aggs: {
               timeline: {
-                date_histogram: {
-                  field: 'published_at',
-                  calendar_interval: interval,
-                  min_doc_count: 0
-                }
+                date_histogram: { field: 'published_at', calendar_interval: interval, min_doc_count: 0 }
               }
             }
           }
         }
       } as any);
 
-      const topicsData: any = {};
       const buckets = (response.aggregations as any)?.topics?.buckets || [];
+      const result = buckets.map((b: any) => ({
+        topic: b.key,
+        total: b.doc_count,
+        timeline: (b.timeline?.buckets || []).map((tb: any) => ({
+          date: tb.key_as_string,
+          count: tb.doc_count
+        }))
+      }));
 
-      buckets.forEach((bucket: any) => {
-        if (topicCodes.length > 0 && !topicCodes.includes(bucket.key)) return;
-
-        const timelineBuckets = bucket.timeline?.buckets || [];
-        const timeline: any[] = [];
-
-        for (let i = 0; i < timelineBuckets.length; i++) {
-          const current = timelineBuckets[i].doc_count;
-          let growthRate: string | null = null;
-          
-          if (i > 0) {
-            const previous = timelineBuckets[i-1].doc_count;
-            if (previous > 0) {
-              growthRate = (((current - previous) / previous) * 100).toFixed(2);
-            }
-          }
-
-          timeline.push({
-            date: timelineBuckets[i].key_as_string,
-            count: current,
-            growth_rate: growthRate
-          });
-        }
-
-        topicsData[bucket.key] = {
-          total: bucket.doc_count,
-          timeline
-        };
-      });
-
-      return {
-        topics: topicsData
-      };
+      return result;
     } catch (error: any) {
       throw new InternalServerErrorException(`ES Error: ${error.message}`);
     }
   }
 
-  async getEmergingTopics(threshold: number = 50, minPapers: number = 10) {
-    const currentYear = new Date().getFullYear();
-    
+  async getHotKeywordsCloud(days: number = 30, size: number = 50) {
     try {
+      const date = new Date();
+      date.setDate(date.getDate() - days);
+      const fromDate = date.toISOString();
+
       const response = await this.elasticsearchService.search({
         index: 'papers',
         size: 0,
+        query: {
+          range: { published_at: { gte: fromDate } }
+        },
         aggs: {
-          topics: {
-            terms: {
-              field: 'categories.keyword',
-              size: 500
-            },
-            aggs: {
-              recent_years: {
-                filter: {
-                  range: { published_year: { gte: currentYear - 1 } }
-                }
-              },
-              old_years: {
-                filter: {
-                  range: { published_year: { gte: currentYear - 4, lt: currentYear - 1 } }
-                }
-              }
-            }
+          hot_keywords: {
+            significant_text: { field: 'abstract', size }
           }
         }
       } as any);
 
-      const buckets = (response.aggregations as any)?.topics?.buckets || [];
-      const emerging: any[] = [];
-
-      buckets.forEach((bucket: any) => {
-        const topic = bucket.key;
-        const recentCount = bucket.recent_years?.doc_count || 0;
-        const oldCount = bucket.old_years?.doc_count || 0;
-
-        if (recentCount >= minPapers) {
-          if (oldCount === 0) {
-            emerging.push({
-              topic,
-              type: 'brand_new',
-              recent_count: recentCount,
-              old_count: 0,
-              growth_rate: 'Infinity'
-            });
-          } else {
-            const growthRate = ((recentCount - oldCount) / oldCount) * 100;
-            if (growthRate >= threshold) {
-              emerging.push({
-                topic,
-                type: 'rapidly_growing',
-                recent_count: recentCount,
-                old_count: oldCount,
-                growth_rate: growthRate.toFixed(2)
-              });
-            }
-          }
-        }
-      });
-
-      return {
-        emerging_topics: emerging.sort((a, b) => {
-          if (a.growth_rate === 'Infinity') return -1;
-          if (b.growth_rate === 'Infinity') return 1;
-          return parseFloat(b.growth_rate) - parseFloat(a.growth_rate);
-        })
-      };
-
+      const buckets = (response.aggregations as any)?.hot_keywords?.buckets || [];
+      return buckets.map((b: any) => ({
+        text: b.key,
+        value: b.score
+      }));
     } catch (error: any) {
       throw new InternalServerErrorException(`ES Error: ${error.message}`);
     }
   }
 
-  async getTrendingScore(limit: number = 10) {
-    const currentYear = new Date().getFullYear();
-    const currentMonth = new Date().getMonth() + 1;
-    
-    let last3MonthsStart = `${currentYear}-${String(currentMonth - 2).padStart(2, '0')}-01`;
-    if (currentMonth <= 2) {
-      last3MonthsStart = `${currentYear - 1}-${String(currentMonth + 10).padStart(2, '0')}-01`;
-    }
-
+  async getActivityHeatmap(limit: number = 10) {
     try {
       const response = await this.elasticsearchService.search({
         index: 'papers',
         size: 0,
         aggs: {
-          topics: {
-            terms: {
-              field: 'categories.keyword',
-              size: limit * 5
-            },
+          topics1: {
+            terms: { field: 'categories.keyword', size: limit },
             aggs: {
-              recent_3_months: {
-                filter: {
-                  range: { published_at: { gte: last3MonthsStart } }
-                }
-              },
-              this_year: {
-                filter: {
-                  term: { published_year: currentYear }
-                }
-              },
-              last_year: {
-                filter: {
-                  term: { published_year: currentYear - 1 }
-                }
+              topics2: {
+                terms: { field: 'categories.keyword', size: limit }
               }
             }
           }
         }
       } as any);
 
-      const buckets = (response.aggregations as any)?.topics?.buckets || [];
-      const trending: any[] = [];
-
-      const maxTotal = buckets.length > 0 ? Math.max(...buckets.map((b: any) => b.doc_count)) : 0;
-
-      buckets.forEach((bucket: any) => {
-        const topic = bucket.key;
-        const total = bucket.doc_count;
-        const recent3Months = bucket.recent_3_months?.doc_count || 0;
-        const thisYear = bucket.this_year?.doc_count || 0;
-        const lastYear = bucket.last_year?.doc_count || 0;
-
-        const recencyScore = total > 0 ? (recent3Months / total) * 100 : 0;
-        
-        let growthRate = 0;
-        if (lastYear > 0) {
-          growthRate = ((thisYear - lastYear) / lastYear) * 100;
-        } else if (thisYear > 0) {
-          growthRate = 100;
-        }
-        const growthScore = Math.max(0, Math.min(growthRate, 100));
-        
-        const volumeScore = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
-
-        const trendingScore = 0.4 * recencyScore + 0.4 * growthScore + 0.2 * volumeScore;
-
-        trending.push({
-          topic,
-          trending_score: trendingScore.toFixed(2),
-          breakdown: {
-            recency: recencyScore.toFixed(2),
-            growth: growthScore.toFixed(2),
-            volume: volumeScore.toFixed(2)
+      const matrix: any[] = [];
+      const buckets = (response.aggregations as any)?.topics1?.buckets || [];
+      
+      buckets.forEach((b1: any) => {
+        const t1 = b1.key;
+        (b1.topics2?.buckets || []).forEach((b2: any) => {
+          const t2 = b2.key;
+          if (t1 !== t2) {
+            matrix.push({ source: t1, target: t2, value: b2.doc_count });
           }
         });
       });
 
-      const sorted = trending.sort((a, b) => parseFloat(b.trending_score) - parseFloat(a.trending_score)).slice(0, limit);
+      return matrix;
+    } catch (error: any) {
+      throw new InternalServerErrorException(`ES Error: ${error.message}`);
+    }
+  }
 
-      return {
-        trending_topics: sorted
-      };
+  async getCategoryRace(interval: string = 'year') {
+    try {
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        size: 0,
+        aggs: {
+          timeline: {
+            date_histogram: { field: 'published_at', calendar_interval: interval, min_doc_count: 0 },
+            aggs: {
+              topics: {
+                terms: { field: 'categories.keyword', size: 10 }
+              }
+            }
+          }
+        }
+      } as any);
 
+      const buckets = (response.aggregations as any)?.timeline?.buckets || [];
+      const raceData = buckets.map((b: any) => {
+        const obj: any = { date: b.key_as_string };
+        (b.topics?.buckets || []).forEach((tb: any) => {
+          obj[tb.key] = tb.doc_count;
+        });
+        return obj;
+      });
+
+      return raceData;
+    } catch (error: any) {
+      throw new InternalServerErrorException(`ES Error: ${error.message}`);
+    }
+  }
+
+  // ==========================================
+  // II. LEADERBOARD
+  // ==========================================
+
+  private getTimeFilterClause(timeframe: string) {
+    const date = new Date();
+    if (timeframe === 'today') date.setDate(date.getDate() - 1);
+    else if (timeframe === 'week') date.setDate(date.getDate() - 7);
+    else if (timeframe === 'month') date.setMonth(date.getMonth() - 1);
+    else return null;
+
+    return { range: { published_at: { gte: date.toISOString() } } };
+  }
+
+  async getTrendingPapers(timeframe: string = 'month', limit: number = 10) {
+    try {
+      const mustClauses: any[] = [];
+      const timeFilter = this.getTimeFilterClause(timeframe);
+      if (timeFilter) mustClauses.push(timeFilter);
+
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        size: limit,
+        query: mustClauses.length > 0 ? { bool: { must: mustClauses } } : { match_all: {} },
+        sort: [
+          { score: { order: 'desc' } },
+          { published_at: { order: 'desc' } }
+        ]
+      });
+
+      return response.hits.hits.map(h => h._source);
+    } catch (error: any) {
+      throw new InternalServerErrorException(`ES Error: ${error.message}`);
+    }
+  }
+
+  async getTopAuthors(timeframe: string = 'all', limit: number = 10) {
+    try {
+      const mustClauses: any[] = [];
+      const timeFilter = this.getTimeFilterClause(timeframe);
+      if (timeFilter) mustClauses.push(timeFilter);
+
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        size: 0,
+        query: mustClauses.length > 0 ? { bool: { must: mustClauses } } : { match_all: {} },
+        aggs: {
+          authors: {
+            terms: { field: 'authors.keyword', size: limit },
+            aggs: {
+              total_score: { sum: { field: 'score' } }
+            }
+          }
+        }
+      } as any);
+
+      const buckets = (response.aggregations as any)?.authors?.buckets || [];
+      return buckets.map((b: any) => ({
+        author: b.key,
+        paperCount: b.doc_count,
+        totalScore: b.total_score?.value || 0
+      }));
+    } catch (error: any) {
+      throw new InternalServerErrorException(`ES Error: ${error.message}`);
+    }
+  }
+
+  async getRisingTopics(timeframe: string = 'month', limit: number = 10) {
+    try {
+      const date = new Date();
+      if (timeframe === 'week') date.setDate(date.getDate() - 7);
+      else if (timeframe === 'month') date.setMonth(date.getMonth() - 1);
+      else date.setFullYear(date.getFullYear() - 1);
+
+      const thresholdDate = date.toISOString();
+
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        size: 0,
+        aggs: {
+          topics: {
+            terms: { field: 'categories.keyword', size: limit * 5 },
+            aggs: {
+              recent: {
+                filter: { range: { published_at: { gte: thresholdDate } } }
+              },
+              old: {
+                filter: { range: { published_at: { lt: thresholdDate } } }
+              }
+            }
+          }
+        }
+      } as any);
+
+      const buckets = (response.aggregations as any)?.topics?.buckets || [];
+      const result: any[] = [];
+
+      buckets.forEach((b: any) => {
+        const topic = b.key;
+        const recentCount = b.recent?.doc_count || 0;
+        const oldCount = b.old?.doc_count || 0;
+        
+        let growthRate = 0;
+        if (oldCount > 0) {
+          growthRate = ((recentCount - oldCount) / oldCount) * 100;
+        } else if (recentCount > 0) {
+          growthRate = 100;
+        }
+
+        if (recentCount > 0) {
+          result.push({
+            topic,
+            currentCount: recentCount,
+            previousCount: oldCount,
+            growthRate: growthRate.toFixed(2) + '%'
+          });
+        }
+      });
+
+      return result.sort((a, b) => parseFloat(b.growthRate) - parseFloat(a.growthRate)).slice(0, limit);
     } catch (error: any) {
       throw new InternalServerErrorException(`ES Error: ${error.message}`);
     }
