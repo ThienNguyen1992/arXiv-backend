@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, Request, Req } from '@nestjs/common';
 import { PapersService } from './papers.service';
 import { CreatePaperDto } from './dto/create-paper.dto';
 import { UpdatePaperDto } from './dto/update-paper.dto';
@@ -8,8 +8,10 @@ import { ArxivPapersQueryDto } from './dto/arxiv-papers-query.dto';
 import { ArxivTimeQueryDto } from './dto/arxiv-time-query.dto';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { PaperFilterDto } from './dto/paper-filter.dto';
+import { YouMightLikeQueryDto } from './dto/you-might-like-query.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 
 @ApiTags('papers')
 @Controller('papers')
@@ -36,15 +38,61 @@ export class PapersController {
   }
 
   @Get('es/search')
-  @ApiOperation({ summary: 'Get papers from Elasticsearch. Supports pagination, topic filter, and text search.' })
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get papers from Elasticsearch. Supports pagination, topic filter, and text search.',
+    description:
+      'With Bearer token and no topics query: uses the current user topics automatically. Multiple topics are interleaved (round-robin); single-topic feeds use daily randomized order. Explicit topics query overrides user topics.',
+  })
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'size', required: false, example: 20 })
-  @ApiQuery({ name: 'topics', required: false, isArray: true, example: ['cs.AI', 'cs.LG'], description: 'Filter by topic codes' })
+  @ApiQuery({ name: 'topics', required: false, isArray: true, example: ['cs.AI', 'cs.LG'], description: 'Filter by topic codes. Overrides user topics when provided.' })
   @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in both title and author' })
   @ApiQuery({ name: 'title', required: false, example: 'neural networks', description: 'Search only in title' })
   @ApiQuery({ name: 'author', required: false, example: 'Andrew Ng', description: 'Search only in author' })
-  searchElasticsearch(@Query() query: PaperFilterDto) {
-    return this.papersService.searchElasticsearch(query);
+  @ApiQuery({ name: 'sortBy', required: false, enum: ['date', 'score'], description: 'Sort by date or score (default is date)' })
+  searchElasticsearch(@Query() query: PaperFilterDto, @Req() req: { user?: { id: string } }) {
+    return this.papersService.searchElasticsearch(query, req.user?.id);
+  }
+
+  @Get('you-might-like')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'You might like — detail page recommendations',
+    description:
+      'Pass paperTopics from the opened paper (e.g. cs.AI,cs.AR). Finds peer users with overlapping interests, picks top 3 topics by frequency, returns 8 + 2 papers shuffled.',
+  })
+  @ApiQuery({ name: 'paperTopics', required: true, example: 'cs.AI,cs.AR' })
+  @ApiQuery({ name: 'excludeArxivId', required: false, example: '2605.30019' })
+  @ApiQuery({ name: 'size', required: false, example: 10 })
+  @ApiQuery({ name: 'paperTopicSize', required: false, example: 8 })
+  @ApiQuery({ name: 'userTopicSize', required: false, example: 2 })
+  getYouMightLike(@Request() req, @Query() query: YouMightLikeQueryDto) {
+    return this.papersService.getYouMightLike(req.user.id, query);
+  }
+
+  @Get('es/:arxivId/similar')
+  @ApiOperation({
+    summary: 'Get similar / duplicate papers for a paper detail page',
+    description: 'Separate from detail API so the detail page can load fast and fetch similar papers in parallel.',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: 10 })
+  getSimilarPapers(@Param('arxivId') arxivId: string, @Query('limit') limit?: string) {
+    return this.papersService.getSimilarPapers(arxivId, limit ? Number(limit) : 10);
+  }
+
+  @Get('es/:arxivId')
+  @ApiOperation({
+    summary: 'Get a paper from Elasticsearch by arXiv ID',
+    description:
+      'Looks up Elasticsearch first, then falls back to live arXiv. Returns similarCount only; use /papers/es/:arxivId/similar for the full similar-papers list.',
+  })
+  @ApiResponse({ status: 200, description: 'Paper found.' })
+  @ApiResponse({ status: 404, description: 'Paper not found.' })
+  findOneFromElasticsearch(@Param('arxivId') arxivId: string) {
+    return this.papersService.findOneFromElasticsearch(arxivId);
   }
 
   @Get('arxiv/search')
@@ -90,17 +138,11 @@ export class PapersController {
     return this.papersService.calculateScoreForPaper(id);
   }
 
-  @Get('es/:id/related')
+  @Get('es/:arxivId/related')
   @ApiOperation({ summary: 'Gợi ý paper liên quan (Thuật toán 4: Cosine/TF-IDF)' })
   @ApiQuery({ name: 'limit', required: false, type: Number, example: 5 })
-  findRelated(@Param('id') id: string, @Query('limit') limit?: number) {
-    return this.papersService.findRelatedPapers(id, limit ? Number(limit) : 5);
-  }
-
-  @Get('es/:id/you-might-like')
-  @ApiOperation({ summary: 'Gợi ý paper theo Topic Co-occurrence (Có thể bạn sẽ thích)' })
-  getYouMightLike(@Param('id') id: string) {
-    return this.papersService.getYouMightLike(id);
+  findRelated(@Param('arxivId') arxivId: string, @Query('limit') limit?: number) {
+    return this.papersService.findRelatedPapers(arxivId, limit ? Number(limit) : 5);
   }
 
   @Get('es/duplicates/list')
@@ -123,14 +165,12 @@ export class PapersController {
     return this.papersService.checkFuzzyDuplicate(body.title, body.abstract);
   }
 
-  @Get('es/:id')
-  @ApiOperation({ summary: 'Get a paper by ID from Elasticsearch' })
-  esFindOne(@Param('id') id: string) {
-    return this.papersService.findOneFromElasticsearch(id);
-  }
-
   @Get(':id')
-  @ApiOperation({ summary: 'Get a paper by ID from PostgreSQL' })
+  @ApiOperation({
+    summary: 'Get a paper by arXiv ID or database UUID',
+    description:
+      'Prefer arxiv_id from search/feed (e.g. 2605.30352). Version suffix is accepted (2605.30352v1). Falls back to Elasticsearch, then live arXiv.',
+  })
   findOne(@Param('id') id: string) {
     return this.papersService.findOne(id);
   }

@@ -49,40 +49,11 @@ export class PaperFilterDto extends PaginationQueryDto {
   author?: string;
 
   @ApiPropertyOptional({
-    description: 'Sort field',
-    example: 'published_at',
-    enum: ['published_at', 'created_at', 'updated_at', 'score'],
-    default: 'published_at',
+    description: 'Sort by field (date or score). Default is date.',
+    enum: ['date', 'score'],
+    example: 'score',
   })
   @IsOptional()
   @IsString()
-  @IsIn(['published_at', 'created_at', 'updated_at', 'score'])
-  sortBy?: string;
-
-  @ApiPropertyOptional({
-    description: 'Sort order',
-    example: 'desc',
-    enum: ['asc', 'desc'],
-    default: 'desc',
-  })
-  @IsOptional()
-  @IsString()
-  @IsIn(['asc', 'desc'])
-  sortOrder?: 'asc' | 'desc';
-
-  @ApiPropertyOptional({
-    description: 'Filter papers published after this date (ISO 8601, e.g. 2024-01-01)',
-    example: '2024-01-01',
-  })
-  @IsOptional()
-  @IsString()
-  fromDate?: string;
-
-  @ApiPropertyOptional({
-    description: 'Filter papers published before this date (ISO 8601, e.g. 2024-12-31)',
-    example: '2024-12-31',
-  })
-  @IsOptional()
-  @IsString()
-  toDate?: string;
+  sortBy?: 'date' | 'score';
 }

@@ -12,6 +12,7 @@ import { DatabaseModule } from './database/database.module';
 import { DataImportModule } from './data-import/data-import.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { StatisticsModule } from './statistics/statistics.module';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
   imports: [
@@ -28,7 +29,7 @@ import { StatisticsModule } from './statistics/statistics.module';
       database: process.env.DB_DATABASE,
       uuidExtension: 'pgcrypto',
       autoLoadEntities: true,
-      synchronize: false, // Warning: Set to false in production
+      synchronize: false, // Tạm thời bật true để tạo bảng notifications
     }),
     UsersModule,
     TopicsModule,
@@ -40,6 +41,7 @@ import { StatisticsModule } from './statistics/statistics.module';
     DatabaseModule,
     DataImportModule,
     StatisticsModule,
+    NotificationModule,
   ],
 })
 export class AppModule {}

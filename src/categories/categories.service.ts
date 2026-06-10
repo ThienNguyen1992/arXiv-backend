@@ -1,6 +1,7 @@
-import { Injectable, InternalServerErrorException, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
+import { resolveArxivTopicCode } from '../common/utils/arxiv-taxonomy.util';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { Category } from './entities/category.entity';
@@ -101,6 +102,80 @@ export class CategoriesService {
     return this.categoriesRepository.remove(category);
   }
 
+  async ensureBundledTaxonomy() {
+    const topicsImported = await this.upsertTaxonomy(ARXIV_TAXONOMY_SEED);
+
+    return {
+      source: 'bundled-arxiv-taxonomy-seed',
+      categoriesImported: ARXIV_TAXONOMY_SEED.length,
+      topicsImported,
+    };
+  }
+
+  async ensureTopicsForCodes(codes: string[], manager?: EntityManager): Promise<Map<string, number>> {
+    const uniqueCodes = [...new Set(codes.map((code) => code.trim()).filter(Boolean))];
+    const topicIdMap = new Map<string, number>();
+    if (uniqueCodes.length === 0) {
+      return topicIdMap;
+    }
+
+    const run = async (entityManager: EntityManager) => {
+      for (const code of uniqueCodes) {
+        const info = resolveArxivTopicCode(code);
+
+        await entityManager
+          .createQueryBuilder()
+          .insert()
+          .into(Category)
+          .values({ code: info.categoryCode, title: info.categoryTitle })
+          .orIgnore()
+          .execute();
+
+        const category = await entityManager.findOne(Category, {
+          where: { code: info.categoryCode },
+        });
+        if (!category) {
+          continue;
+        }
+
+        await entityManager
+          .createQueryBuilder()
+          .insert()
+          .into(Topic)
+          .values({
+            code: info.code,
+            title: info.title,
+            category_id: category.id,
+            is_active: true,
+          })
+          .orIgnore()
+          .execute();
+
+        let topic = await entityManager.findOne(Topic, { where: { code: info.code } });
+        if (!topic) {
+          continue;
+        }
+
+        if (topic.category_id !== category.id || topic.title !== info.title) {
+          topic.category_id = category.id;
+          topic.title = info.title;
+          topic.is_active = true;
+          topic = await entityManager.save(Topic, topic);
+        }
+
+        topicIdMap.set(code, topic.id);
+      }
+    };
+
+    if (manager) {
+      await run(manager);
+    } else {
+      await this.dataSource.transaction(run);
+    }
+
+    return topicIdMap;
+  }
+
   async syncArxivTaxonomy() {
     let parsedCategories: ParsedArxivCategory[];
     let source = this.arxivTaxonomyUrl;
@@ -118,6 +193,17 @@ export class CategoriesService {
       parsedCategories = ARXIV_TAXONOMY_SEED;
     }
 
+    const topicsImported = await this.upsertTaxonomy(parsedCategories);
+
+    return {
+      source,
+      categoriesImported: parsedCategories.length,
+      topicsImported,
+      ...(fetchError ? { warning: `Could not fetch live arXiv taxonomy: ${fetchError}` } : {}),
+    };
+  }
+
+  private async upsertTaxonomy(parsedCategories: ParsedArxivCategory[]) {
     let topicsImported = 0;
 
     await this.dataSource.transaction(async (manager) => {
@@ -154,12 +240,7 @@ export class CategoriesService {
       }
     });
 
-    return {
-      source,
-      categoriesImported: parsedCategories.length,
-      topicsImported,
-      ...(fetchError ? { warning: `Could not fetch live arXiv taxonomy: ${fetchError}` } : {}),
-    };
+    return topicsImported;
   }
 
   parseArxivTaxonomy(html: string): ParsedArxivCategory[] {

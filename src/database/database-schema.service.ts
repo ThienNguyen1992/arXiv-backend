@@ -55,6 +55,23 @@ export class DatabaseSchemaService implements OnModuleInit {
         CONSTRAINT fk_history_paper FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE CASCADE
       );
     `);
+
+    await this.dataSource.query(`
+      CREATE TABLE IF NOT EXISTS paper_similarities (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        arxiv_id VARCHAR(30) NOT NULL,
+        similar_arxiv_id VARCHAR(30) NOT NULL,
+        similarity DOUBLE PRECISION NOT NULL,
+        type VARCHAR(20) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_paper_similarities_pair UNIQUE (arxiv_id, similar_arxiv_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_paper_similarities_arxiv
+        ON paper_similarities(arxiv_id);
+      CREATE INDEX IF NOT EXISTS idx_paper_similarities_similar
+        ON paper_similarities(similar_arxiv_id);
+    `);
+
     this.logger.log('Ensured all standard tables exist.');
 
 

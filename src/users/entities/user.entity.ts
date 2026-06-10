@@ -1,6 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToMany, JoinTable } from 'typeorm';
 import { Topic } from '../../topics/entities/topic.entity';
-import { Paper } from '../../papers/entities/paper.entity';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 @Entity('users')
@@ -52,12 +51,4 @@ export class User {
     inverseJoinColumn: { name: 'topic_id', referencedColumnName: 'id' },
   })
   topics: Topic[];
-
-  @ManyToMany(() => Paper)
-  @JoinTable({
-    name: 'users_favorite_papers',
-    joinColumn: { name: 'user_id', referencedColumnName: 'id' },
-    inverseJoinColumn: { name: 'paper_id', referencedColumnName: 'id' },
-  })
-  favorite_papers: Paper[];
 }

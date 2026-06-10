@@ -1,9 +1,9 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn, Unique } from 'typeorm';
 import { User } from './user.entity';
 
-@Entity('user_paper_history')
+@Entity('user_favorites')
 @Unique(['user_id', 'arxiv_id'])
-export class UserPaperHistory {
+export class UserFavorite {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
@@ -18,5 +18,5 @@ export class UserPaperHistory {
   user: User;
 
   @CreateDateColumn({ type: 'timestamptz' })
-  viewed_at: Date;
+  created_at: Date;
 }
