@@ -37,4 +37,16 @@ export class DataImportController {
   async importElasticsearchLocalData(@Body() importLocalDataDto: ImportLocalDataDto) {
     return await this.dataImportService.importElasticsearchLocalData(importLocalDataDto.path);
   }
+
+  @Post('sync-topics')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Sync categories/topics from bundled arXiv taxonomy and Elasticsearch paper categories',
+    description:
+      'Use this after Elasticsearch-only import so UI can map tags like hep-th to database topics.',
+  })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Topics synced successfully.' })
+  async syncTopics() {
+    return await this.dataImportService.syncTopicsFromElasticsearch();
+  }
 }

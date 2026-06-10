@@ -24,7 +24,7 @@ export class AuthController {
   @ApiOperation({ summary: 'Login user' })
   @ApiBody({ type: LoginDto })
   @ApiResponse({ status: 200, description: 'Successfully logged in, returns tokens and user.', type: LoginResponseDto })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 401, description: 'Invalid email or password.' })
   login(@Request() req) {
     return this.authService.login(req.user);
   }

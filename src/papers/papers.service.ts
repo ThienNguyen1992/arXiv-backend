@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { CreatePaperDto } from './dto/create-paper.dto';
 import { UpdatePaperDto } from './dto/update-paper.dto';
 import { CreatePaperVersionDto } from './dto/create-paper-version.dto';
@@ -17,6 +17,10 @@ import { ArxivTimeQueryDto } from './dto/arxiv-time-query.dto';
 import { User } from '../users/entities/user.entity';
 import { Topic } from '../topics/entities/topic.entity';
 import { PaperScorer, PaperScoringInput } from '../common/utils/paper-score.util';
+import { PaperDuplicatesService } from './paper-duplicates.service';
+import { YouMightLikeQueryDto } from './dto/you-might-like-query.dto';
+import { UserFavorite } from '../users/entities/user-favorite.entity';
+import { UserPaperHistory } from '../users/entities/user-paper-history.entity';
 
 export interface ArxivPaperDto {
   id: string;
@@ -47,7 +51,12 @@ export class PapersService {
     private readonly usersRepository: Repository<User>,
     @InjectRepository(Topic)
     private readonly topicsRepository: Repository<Topic>,
+    @InjectRepository(UserFavorite)
+    private readonly favoriteRepository: Repository<UserFavorite>,
+    @InjectRepository(UserPaperHistory)
+    private readonly historyRepository: Repository<UserPaperHistory>,
     private readonly elasticsearchService: ElasticsearchService,
+    private readonly paperDuplicatesService: PaperDuplicatesService,
   ) {}
 
   create(createPaperDto: CreatePaperDto) {
@@ -91,15 +100,398 @@ export class PapersService {
     return toPaginatedResponse(data, total, page, size);
   }
 
-  async searchElasticsearch(query: PaperFilterDto) {
-    const { page, size, skip } = getPagination(query);
+  async getYouMightLike(userId: string, query: YouMightLikeQueryDto) {
+    const paperTopics = this.normalizeTopicCodes(query.paperTopics);
+    if (paperTopics.length === 0) {
+      throw new BadRequestException(
+        'paperTopics is required, for example: ?paperTopics=cs.AI,cs.AR',
+      );
+    }
 
+    return this.buildYouMightLikeDetailResponse(userId, {
+      ...query,
+      paperTopics,
+    });
+  }
+
+  private async buildYouMightLikeDetailResponse(
+    userId: string,
+    query: YouMightLikeQueryDto & { paperTopics: string[] },
+  ) {
+    const totalSize = query.size ?? 10;
+    const paperTopicSize = Math.min(query.paperTopicSize ?? 8, totalSize);
+    const userTopicSize = Math.min(query.userTopicSize ?? 2, totalSize - paperTopicSize);
+    const topPaperTopics = query.topPaperTopics ?? 3;
+
+    const userResolution = query.userTopics?.length
+      ? { topicCodes: this.normalizeTopicCodes(query.userTopics), fallback: false }
+      : await this.resolveUserTopicCodes(userId);
+    const userTopicCodes = userResolution.topicCodes;
+    const fallback = userResolution.fallback;
+
+    const excludedArxivIds = await this.getRecommendationExcludedArxivIds(
+      userId,
+      query.excludeArxivId,
+    );
+
+    const peerTopicRanking = await this.rankTopicsByPeerUserFrequency(
+      query.paperTopics,
+      userId,
+      topPaperTopics,
+    );
+    const selectedPeerTopics = peerTopicRanking.topics.map((item) => item.topic);
+
+    const paperTopicPapers =
+      paperTopicSize > 0 && selectedPeerTopics.length > 0
+        ? await this.fetchYouMightLikeFromTopicsMixed(
+            selectedPeerTopics,
+            paperTopicSize,
+            excludedArxivIds,
+            userId,
+            'peer_topic',
+          )
+        : [];
+
+    const seen = new Set([
+      ...excludedArxivIds,
+      ...paperTopicPapers.map((paper) => String(paper.arxiv_id)),
+    ]);
+
+    const sampledUserTopics = this.sampleTopicsForCount(userTopicCodes, userTopicSize);
+    const userTopicPapers =
+      userTopicSize > 0 && sampledUserTopics.length > 0
+        ? await this.fetchYouMightLikeFromTopicsMixed(
+            sampledUserTopics,
+            userTopicSize,
+            [...seen],
+            userId,
+            'user_topic',
+          )
+        : [];
+
+    const data = this.shuffleItems([...paperTopicPapers, ...userTopicPapers]).map((paper) => ({
+      ...paper,
+      source: 'elasticsearch',
+    }));
+
+    return {
+      data,
+      meta: {
+        size: data.length,
+        paperTopicSize: paperTopicPapers.length,
+        userTopicSize: userTopicPapers.length,
+        peerUserCount: peerTopicRanking.peerUserCount,
+      },
+      paperTopics: query.paperTopics,
+      rankedPeerTopics: peerTopicRanking.topics,
+      selectedPeerTopics,
+      sampledUserTopics,
+      userTopics: userTopicCodes,
+      fallback,
+    };
+  }
+
+  private normalizeTopicCodes(topicCodes?: string[]): string[] {
+    return [
+      ...new Set(
+        (topicCodes ?? [])
+          .map((code) => this.normalizeTopicCode(code))
+          .filter(Boolean),
+      ),
+    ];
+  }
+
+  private normalizeTopicCode(code: string): string {
+    const trimmed = code.trim();
+    if (!trimmed) {
+      return '';
+    }
+
+    const dotIndex = trimmed.indexOf('.');
+    if (dotIndex > 0) {
+      return `${trimmed.slice(0, dotIndex).toLowerCase()}${trimmed.slice(dotIndex)}`;
+    }
+
+    return trimmed.toLowerCase();
+  }
+
+  private sampleTopicsForCount(topicCodes: string[], count: number): string[] {
+    if (topicCodes.length === 0 || count <= 0) {
+      return [];
+    }
+
+    const shuffled = [...topicCodes].sort(() => Math.random() - 0.5);
+    if (shuffled.length <= count) {
+      return shuffled;
+    }
+
+    return shuffled.slice(0, count);
+  }
+
+  private shuffleItems<T>(items: T[]): T[] {
+    return [...items].sort(() => Math.random() - 0.5);
+  }
+
+  private async rankTopicsByPeerUserFrequency(
+    paperTopicCodes: string[],
+    currentUserId: string,
+    topN: number,
+  ): Promise<{
+    peerUserCount: number;
+    topics: Array<{ topic: string; frequency: number }>;
+  }> {
+    const normalizedPaperTopics = this.normalizeTopicCodes(paperTopicCodes);
+    if (normalizedPaperTopics.length === 0) {
+      return { peerUserCount: 0, topics: [] };
+    }
+
+    const peerUserRows = await this.usersRepository
+      .createQueryBuilder('user')
+      .innerJoin('user.topics', 'overlapTopic')
+      .where('user.id != :currentUserId', { currentUserId })
+      .andWhere('overlapTopic.code IN (:...paperTopicCodes)', {
+        paperTopicCodes: normalizedPaperTopics,
+      })
+      .select('user.id', 'id')
+      .distinct(true)
+      .getRawMany<{ id: string }>();
+
+    const peerUserIds = peerUserRows.map((row) => row.id);
+    if (peerUserIds.length === 0) {
+      return {
+        peerUserCount: 0,
+        topics: normalizedPaperTopics.slice(0, topN).map((topic, index) => ({
+          topic,
+          frequency: normalizedPaperTopics.length - index,
+        })),
+      };
+    }
+
+    const peerUsers = await this.usersRepository.find({
+      where: { id: In(peerUserIds) },
+      relations: ['topics'],
+    });
+
+    const frequencyMap = new Map<string, number>();
+    for (const peerUser of peerUsers) {
+      for (const topic of peerUser.topics ?? []) {
+        frequencyMap.set(topic.code, (frequencyMap.get(topic.code) ?? 0) + 1);
+      }
+    }
+
+    const topics = [...frequencyMap.entries()]
+      .sort((left, right) => {
+        if (right[1] !== left[1]) {
+          return right[1] - left[1];
+        }
+        return left[0].localeCompare(right[0]);
+      })
+      .slice(0, topN)
+      .map(([topic, frequency]) => ({ topic, frequency }));
+
+    return {
+      peerUserCount: peerUserIds.length,
+      topics,
+    };
+  }
+
+  private async fetchYouMightLikeFromTopicsMixed(
+    topicCodes: string[],
+    size: number,
+    excludedArxivIds: string[],
+    userId: string,
+    recommendationType: 'peer_topic' | 'user_topic',
+  ) {
+    if (topicCodes.length === 0 || size <= 0) {
+      return [] as Record<string, any>[];
+    }
+
+    const shuffledTopics = [...topicCodes].sort(() => Math.random() - 0.5);
+    const perTopic = Math.ceil(size / shuffledTopics.length);
+    const seen = new Set(excludedArxivIds);
+    const results: Record<string, any>[] = [];
+
+    const topicResponses = await Promise.all(
+      shuffledTopics.map((topic, index) =>
+        this.elasticsearchService.search({
+          index: 'papers',
+          size: perTopic * 2,
+          query: {
+            function_score: {
+              query: {
+                bool: {
+                  must: [{ term: { 'categories.keyword': topic } }],
+                  must_not: [
+                    ...this.buildFeedDuplicateMustNot(),
+                    ...(seen.size > 0 ? [{ terms: { arxiv_id: [...seen] } }] : []),
+                  ],
+                },
+              },
+              functions: [{ random_score: { seed: this.buildPersonalizedRandomSeed(userId) + index + size } }],
+              boost_mode: 'replace',
+            },
+          } as any,
+        }),
+      ),
+    );
+
+    const hitsPerTopic = topicResponses.map((response) => response.hits.hits);
+    let round = 0;
+
+    while (results.length < size) {
+      let addedInRound = false;
+
+      for (let topicIndex = 0; topicIndex < hitsPerTopic.length; topicIndex++) {
+        if (results.length >= size) {
+          break;
+        }
+
+        const hit = hitsPerTopic[topicIndex][round];
+        if (!hit) {
+          continue;
+        }
+
+        const src = hit._source as Record<string, any>;
+        const arxivId = this.normalizeArxivId(String(src.arxiv_id));
+        if (seen.has(arxivId)) {
+          continue;
+        }
+
+        seen.add(arxivId);
+        results.push({
+          ...src,
+          arxiv_id: arxivId,
+          recommendation_type: recommendationType,
+          matched_topic: shuffledTopics[topicIndex],
+          es_score: hit._score,
+        });
+        addedInRound = true;
+      }
+
+      if (!addedInRound) {
+        break;
+      }
+
+      round += 1;
+    }
+
+    return results;
+  }
+
+  private async getRecommendationExcludedArxivIds(
+    userId: string,
+    excludeArxivId?: string,
+  ): Promise<string[]> {
+    const [favorites, history] = await Promise.all([
+      this.favoriteRepository.find({
+        where: { user_id: userId },
+        select: ['arxiv_id'],
+      }),
+      this.historyRepository.find({
+        where: { user_id: userId },
+        select: ['arxiv_id'],
+      }),
+    ]);
+
+    const excluded = new Set<string>([
+      ...favorites.map((item) => this.normalizeArxivId(item.arxiv_id)),
+      ...history.map((item) => this.normalizeArxivId(item.arxiv_id)),
+    ]);
+
+    if (excludeArxivId) {
+      excluded.add(this.normalizeArxivId(excludeArxivId));
+    }
+
+    return [...excluded];
+  }
+
+  private buildFeedDuplicateMustNot() {
+    return [
+      { term: { show_on_feed: false } },
+      { exists: { field: 'duplicate_of_arxiv_id' } },
+    ];
+  }
+
+  async searchElasticsearch(query: PaperFilterDto, userId?: string) {
+    const { page, size, skip } = getPagination(query);
+    let personalized = false;
+    let fallback = false;
+    let selectedTopics = query.topics ?? [];
+
+    if (selectedTopics.length === 0 && userId) {
+      const resolved = await this.resolveUserTopicCodes(userId);
+      selectedTopics = resolved.topicCodes;
+      fallback = resolved.fallback;
+      personalized = true;
+      query = { ...query, topics: selectedTopics };
+    }
+
+    const isFeedStyleQuery =
+      selectedTopics.length > 0 &&
+      !query.q &&
+      !query.title &&
+      !query.author &&
+      query.sortBy !== 'score';
+
+    const hideFeedDuplicates = isFeedStyleQuery;
+
+    let result;
+    if (isFeedStyleQuery && selectedTopics.length > 1) {
+      result = await this.searchElasticsearchWithTopicMix(query, page, size, hideFeedDuplicates);
+    } else if (isFeedStyleQuery && personalized) {
+      result = await this.searchElasticsearchWithRandomScore(query, page, size, skip, userId, hideFeedDuplicates);
+    } else {
+      result = await this.searchElasticsearchSingleQuery(query, page, size, skip, hideFeedDuplicates);
+    }
+
+    return {
+      ...result,
+      personalized,
+      fallback,
+      selectedTopics,
+    };
+  }
+
+  private async resolveUserTopicCodes(userId: string) {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      relations: ['topics'],
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User #${userId} not found`);
+    }
+
+    let topicCodes = (user.topics ?? []).map((topic) => topic.code);
+    let fallback = false;
+
+    if (topicCodes.length === 0) {
+      fallback = true;
+      topicCodes = await this.getRandomTopicCodes(5);
+    }
+
+    return { topicCodes, fallback };
+  }
+
+  private buildPersonalizedRandomSeed(userId?: string): number {
+    const day = new Date().toISOString().slice(0, 10);
+    const input = `${userId ?? 'guest'}-${day}`;
+    let hash = 0;
+
+    for (let i = 0; i < input.length; i++) {
+      hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+    }
+
+    return hash;
+  }
+
+  private buildElasticsearchFilterQuery(query: PaperFilterDto, hideFeedDuplicates = false) {
     const must: any[] = [];
+    const mustNot: any[] = [];
 
     if (query.topics && query.topics.length > 0) {
-      const topicsQuery = query.topics.join(' ');
       must.push({
-        match: { categories: topicsQuery }
+        terms: { 'categories.keyword': query.topics },
       });
     }
 
@@ -107,46 +499,85 @@ export class PapersService {
       must.push({
         multi_match: {
           query: query.q,
-          fields: ['title', 'authors']
-        }
+          fields: ['title', 'authors'],
+        },
       });
     }
 
     if (query.title) {
       must.push({
-        match: { title: query.title }
+        match: { title: query.title },
       });
     }
 
     if (query.author) {
       must.push({
-        match: { authors: query.author }
+        match: { authors: query.author },
       });
     }
 
-    const esQuery = must.length > 0 ? { bool: { must } } : { match_all: {} };
-
-    const sort: any[] = [];
-    if (query.sortBy === 'score') {
-      sort.push({ score: { order: 'desc', unmapped_type: 'float' } });
-    } else {
-      sort.push({ published_at: { order: 'desc', unmapped_type: 'date' } });
+    if (hideFeedDuplicates) {
+      mustNot.push({ term: { show_on_feed: false } });
+      mustNot.push({ exists: { field: 'duplicate_of_arxiv_id' } });
     }
 
+    if (must.length === 0 && mustNot.length === 0) {
+      return { match_all: {} };
+    }
+
+    return {
+      bool: {
+        ...(must.length > 0 ? { must } : {}),
+        ...(mustNot.length > 0 ? { must_not: mustNot } : {}),
+      },
+    };
+  }
+
+  private buildElasticsearchSort(query: PaperFilterDto): any[] {
+    if (query.sortBy === 'score') {
+      return [{ score: { order: 'desc' as const, unmapped_type: 'float' } }];
+    }
+
+    return [{ published_at: { order: 'desc' as const, unmapped_type: 'date' } }];
+  }
+
+  private mapElasticsearchHits(hits: any[]) {
+    return hits.map((hit) => ({
+      ...(hit._source as Record<string, any>),
+      es_score: hit._score,
+    }));
+  }
+
+  private getElasticsearchTotal(total: unknown): number {
+    if (typeof total === 'number') {
+      return total;
+    }
+
+    if (total && typeof total === 'object' && 'value' in total) {
+      return (total as { value: number }).value;
+    }
+
+    return 0;
+  }
+
+  private async searchElasticsearchSingleQuery(
+    query: PaperFilterDto,
+    page: number,
+    size: number,
+    skip: number,
+    hideFeedDuplicates = false,
+  ) {
     try {
       const response = await this.elasticsearchService.search({
         index: 'papers',
         from: skip,
-        size: size,
-        query: esQuery,
-        sort: sort
+        size,
+        query: this.buildElasticsearchFilterQuery(query, hideFeedDuplicates),
+        sort: this.buildElasticsearchSort(query),
       });
 
-      const total = response.hits.total ? (typeof response.hits.total === 'number' ? response.hits.total : response.hits.total.value) : 0;
-      const data = response.hits.hits.map(hit => ({
-        ...(hit._source as Record<string, any>),
-        es_score: hit._score,
-      }));
+      const total = this.getElasticsearchTotal(response.hits.total);
+      const data = this.mapElasticsearchHits(response.hits.hits);
 
       return {
         data,
@@ -155,7 +586,156 @@ export class PapersService {
           size,
           total,
           totalPages: Math.ceil(total / size),
+        },
+      };
+    } catch (error) {
+      throw new InternalServerErrorException(`Elasticsearch search failed: ${error.message}`);
+    }
+  }
+
+  private async searchElasticsearchWithRandomScore(
+    query: PaperFilterDto,
+    page: number,
+    size: number,
+    skip: number,
+    userId?: string,
+    hideFeedDuplicates = false,
+  ) {
+    const topics = query.topics ?? [];
+    const seed = this.buildPersonalizedRandomSeed(userId) + page;
+    const baseQuery = this.buildElasticsearchFilterQuery(query, hideFeedDuplicates);
+
+    try {
+      const response = await this.elasticsearchService.search({
+        index: 'papers',
+        from: skip,
+        size,
+        query: {
+          function_score: {
+            query: baseQuery,
+            functions: [{ random_score: { seed } }],
+            boost_mode: 'replace',
+          },
+        } as any,
+      });
+
+      const total = this.getElasticsearchTotal(response.hits.total);
+      const data = this.mapElasticsearchHits(response.hits.hits);
+
+      return {
+        data,
+        meta: {
+          page,
+          size,
+          total,
+          totalPages: Math.ceil(total / size),
+        },
+      };
+    } catch (error) {
+      throw new InternalServerErrorException(`Elasticsearch search failed: ${error.message}`);
+    }
+  }
+
+  private async searchElasticsearchWithTopicMix(
+    query: PaperFilterDto,
+    page: number,
+    size: number,
+    hideFeedDuplicates = false,
+  ) {
+    const topics = [...(query.topics ?? [])].sort(() => Math.random() - 0.5);
+    const perTopic = Math.ceil(size / topics.length);
+    const skipPerTopic = (page - 1) * perTopic;
+    const fetchSize = perTopic * 2;
+
+    try {
+      const [topicResponses, countResponse] = await Promise.all([
+        Promise.all(
+          topics.map((topic) =>
+            this.elasticsearchService.search({
+              index: 'papers',
+              from: skipPerTopic,
+              size: fetchSize,
+              query: hideFeedDuplicates
+                ? {
+                    bool: {
+                      must: [{ term: { 'categories.keyword': topic } }],
+                      must_not: [
+                        { term: { show_on_feed: false } },
+                        { exists: { field: 'duplicate_of_arxiv_id' } },
+                      ],
+                    },
+                  }
+                : {
+                    term: { 'categories.keyword': topic },
+                  },
+              sort: [{ published_at: { order: 'desc', unmapped_type: 'date' } }],
+            }),
+          ),
+        ),
+        this.elasticsearchService.count({
+          index: 'papers',
+          query: hideFeedDuplicates
+            ? {
+                bool: {
+                  must: [{ terms: { 'categories.keyword': topics } }],
+                  must_not: [
+                    { term: { show_on_feed: false } },
+                    { exists: { field: 'duplicate_of_arxiv_id' } },
+                  ],
+                },
+              }
+            : { terms: { 'categories.keyword': topics } },
+        }),
+      ]);
+
+      const hitsPerTopic = topicResponses.map((response) => response.hits.hits);
+      const seen = new Set<string>();
+      const data: Record<string, any>[] = [];
+
+      let round = 0;
+      while (data.length < size) {
+        let addedInRound = false;
+
+        for (const hits of hitsPerTopic) {
+          if (data.length >= size) {
+            break;
+          }
+
+          const hit = hits[round];
+          if (!hit) {
+            continue;
+          }
+
+          const arxivId = (hit._source as Record<string, any>)?.arxiv_id;
+          if (!arxivId || seen.has(arxivId)) {
+            continue;
+          }
+
+          seen.add(arxivId);
+          data.push({
+            ...(hit._source as Record<string, any>),
+            es_score: hit._score,
+          });
+          addedInRound = true;
         }
+
+        if (!addedInRound) {
+          break;
+        }
+
+        round += 1;
+      }
+
+      const total = countResponse.count ?? 0;
+
+      return {
+        data,
+        meta: {
+          page,
+          size,
+          total,
+          totalPages: Math.ceil(total / size),
+        },
       };
     } catch (error) {
       throw new InternalServerErrorException(`Elasticsearch search failed: ${error.message}`);
@@ -169,35 +749,170 @@ export class PapersService {
   async getElasticsearchPapersByArxivIds(arxivIds: string[]): Promise<any[]> {
     if (!arxivIds || arxivIds.length === 0) return [];
 
+    const normalizedIds = arxivIds.map((id) => this.normalizeArxivId(id));
+
     try {
       const response = await this.elasticsearchService.search({
         index: 'papers',
-        size: arxivIds.length,
+        size: normalizedIds.length,
         query: {
-          terms: { arxiv_id: arxivIds },
+          terms: { arxiv_id: normalizedIds },
         },
       });
 
-      // Build a map for O(1) lookup so we can return in original order
       const map = new Map<string, any>();
       for (const hit of response.hits.hits) {
         const src = hit._source as Record<string, any>;
-        map.set(src['arxiv_id'], { ...src, es_score: hit._score });
+        map.set(src['arxiv_id'], { ...src, es_score: hit._score, source: 'elasticsearch' });
       }
 
-      return arxivIds.map(id => map.get(id)).filter(Boolean);
+      return normalizedIds.map((id) => map.get(id)).filter(Boolean);
     } catch (error) {
       throw new InternalServerErrorException(`Elasticsearch fetch by arxiv ids failed: ${error.message}`);
     }
   }
 
+  async getElasticsearchPaperByArxivId(arxivId: string) {
+    const normalizedArxivId = this.normalizeArxivId(arxivId);
+
+    try {
+      const doc = await this.elasticsearchService.get({
+        index: 'papers',
+        id: normalizedArxivId,
+      });
+
+      return {
+        ...(doc._source as Record<string, any>),
+        source: 'elasticsearch',
+      };
+    } catch {
+      const [paper] = await this.getElasticsearchPapersByArxivIds([normalizedArxivId]);
+      return paper ?? null;
+    }
+  }
+
+  async findOneFromElasticsearch(arxivId: string) {
+    const normalizedArxivId = this.normalizeArxivId(arxivId);
+
+    const esPaper = await this.getElasticsearchPaperByArxivId(normalizedArxivId);
+    if (esPaper) {
+      const similarCount = await this.paperDuplicatesService.countSimilarPapers(normalizedArxivId);
+      return { ...esPaper, similarCount };
+    }
+
+    const livePaper = await this.fetchArxivPaperDetail(normalizedArxivId);
+    if (livePaper) {
+      const similarCount = await this.paperDuplicatesService.countSimilarPapers(normalizedArxivId);
+      return { ...livePaper, similarCount };
+    }
+
+    throw new NotFoundException(`Paper ${arxivId} not found`);
+  }
+
+  getSimilarPapers(arxivId: string, limit = 10) {
+    return this.paperDuplicatesService.getSimilarPapers(arxivId, limit);
+  }
+
   async findOne(id: string) {
-    const paper = await this.papersRepository.findOne({
-      where: { id },
-      relations: ['paperTopics', 'paperTopics.topic', 'versions'],
+    const trimmedId = id.trim();
+    const arxivId = this.normalizeArxivId(trimmedId);
+    const paperRelations = ['paperTopics', 'paperTopics.topic', 'versions'] as const;
+
+    if (this.isUuid(trimmedId)) {
+      const paperByUuid = await this.papersRepository.findOne({
+        where: { id: trimmedId },
+        relations: [...paperRelations],
+      });
+      if (paperByUuid) {
+        return { ...paperByUuid, source: 'database' };
+      }
+    }
+
+    const paperByArxivId = await this.papersRepository.findOne({
+      where: { arxiv_id: arxivId },
+      relations: [...paperRelations],
     });
-    if (!paper) throw new NotFoundException(`Paper #${id} not found`);
-    return paper;
+    if (paperByArxivId) {
+      return { ...paperByArxivId, source: 'database' };
+    }
+
+    const esPaper = await this.getElasticsearchPaperByArxivId(arxivId);
+    if (esPaper) {
+      return esPaper;
+    }
+
+    const livePaper = await this.fetchArxivPaperDetail(arxivId);
+    if (livePaper) {
+      return livePaper;
+    }
+
+    throw new NotFoundException(`Paper ${id} not found`);
+  }
+
+  private async findDatabasePaper(identifier: string): Promise<Paper> {
+    const trimmedId = identifier.trim();
+    const arxivId = this.normalizeArxivId(trimmedId);
+    const relations = ['paperTopics', 'paperTopics.topic', 'versions'] as const;
+
+    if (this.isUuid(trimmedId)) {
+      const paperByUuid = await this.papersRepository.findOne({
+        where: { id: trimmedId },
+        relations: [...relations],
+      });
+      if (paperByUuid) {
+        return paperByUuid;
+      }
+    }
+
+    const paperByArxivId = await this.papersRepository.findOne({
+      where: { arxiv_id: arxivId },
+      relations: [...relations],
+    });
+    if (paperByArxivId) {
+      return paperByArxivId;
+    }
+
+    throw new NotFoundException(`Paper ${identifier} not found in database`);
+  }
+
+  private normalizeArxivId(value: string): string {
+    return value.trim().replace(/v\d+$/i, '');
+  }
+
+  private isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  }
+
+  private async fetchArxivPaperDetail(arxivId: string) {
+    const url = new URL(this.arxivApiUrl);
+    url.searchParams.set('id_list', arxivId);
+
+    let xml: string;
+    try {
+      xml = await this.fetchTextWithTimeout(url.toString());
+    } catch {
+      return null;
+    }
+
+    const parsed = this.parseArxivXml(xml);
+    if (parsed.data.length === 0) {
+      return null;
+    }
+
+    const arxivPaper = parsed.data[0];
+
+    return {
+      arxiv_id: arxivPaper.arxiv_id,
+      title: arxivPaper.title,
+      abstract: arxivPaper.summary,
+      authors: arxivPaper.authors,
+      categories: arxivPaper.allCategories,
+      primary_category: arxivPaper.primaryCategory,
+      pdf_url: arxivPaper.pdfLink || `https://arxiv.org/pdf/${arxivPaper.arxiv_id}.pdf`,
+      published_at: arxivPaper.publishedDate,
+      updated_at: arxivPaper.updatedDate,
+      source: 'arxiv',
+    };
   }
 
   async fetchArxivPapersByTopicsQuery(query: ArxivPapersQueryDto) {
@@ -274,13 +989,13 @@ export class PapersService {
   }
 
   async update(id: string, updatePaperDto: UpdatePaperDto) {
-    const paper = await this.findOne(id);
+    const paper = await this.findDatabasePaper(id);
     this.papersRepository.merge(paper, updatePaperDto);
     return this.papersRepository.save(paper);
   }
 
   async remove(id: string) {
-    const paper = await this.findOne(id);
+    const paper = await this.findDatabasePaper(id);
     return this.papersRepository.remove(paper);
   }
 
@@ -319,7 +1034,7 @@ export class PapersService {
   }
 
   async calculateScoreForPaper(id: string) {
-    const paper = await this.findOne(id);
+    const paper = await this.findDatabasePaper(id);
     const scorer = new PaperScorer();
     
     const input: PaperScoringInput = {
@@ -369,16 +1084,16 @@ export class PapersService {
 
   // --- Versions ---
   async addVersion(paperId: string, dto: CreatePaperVersionDto) {
-    await this.findOne(paperId); // ensure paper exists
-    const version = this.versionsRepository.create({ ...dto, paper_id: paperId });
+    const paper = await this.findDatabasePaper(paperId);
+    const version = this.versionsRepository.create({ ...dto, paper_id: paper.id });
     return this.versionsRepository.save(version);
   }
 
   async getVersions(paperId: string, query: PaginationQueryDto) {
-    await this.findOne(paperId);
+    const paper = await this.findDatabasePaper(paperId);
     const { page, size, skip, take } = getPagination(query);
     const [data, total] = await this.versionsRepository.findAndCount({
-      where: { paper_id: paperId },
+      where: { paper_id: paper.id },
       order: { version_number: 'ASC' },
       skip,
       take,
@@ -389,14 +1104,15 @@ export class PapersService {
 
   // --- Topics ---
   async addTopic(paperId: string, dto: AddPaperTopicDto) {
-    await this.findOne(paperId);
-    const paperTopic = this.paperTopicsRepository.create({ paper_id: paperId, ...dto });
+    const paper = await this.findDatabasePaper(paperId);
+    const paperTopic = this.paperTopicsRepository.create({ paper_id: paper.id, ...dto });
     return this.paperTopicsRepository.save(paperTopic);
   }
 
   async removeTopic(paperId: string, topicId: number) {
-    const pt = await this.paperTopicsRepository.findOneBy({ paper_id: paperId, topic_id: topicId });
-    if (!pt) throw new NotFoundException(`Topic #${topicId} not linked to Paper #${paperId}`);
+    const paper = await this.findDatabasePaper(paperId);
+    const pt = await this.paperTopicsRepository.findOneBy({ paper_id: paper.id, topic_id: topicId });
+    if (!pt) throw new NotFoundException(`Topic #${topicId} not linked to Paper #${paper.id}`);
     return this.paperTopicsRepository.remove(pt);
   }
 

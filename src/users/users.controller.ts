@@ -7,11 +7,16 @@ import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth, ApiQuery }
 import { User } from './entities/user.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { YouMightLikeQueryDto } from '../papers/dto/you-might-like-query.dto';
+import { PapersService } from '../papers/papers.service';
 
 @ApiTags('users')
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly papersService: PapersService,
+  ) {}
 
   @Post()
   @ApiOperation({ summary: 'Create a new user' })
@@ -89,6 +94,18 @@ export class UsersController {
   @ApiOperation({ summary: 'Remove a paper from the current user favorites' })
   removeMyFavorite(@Request() req, @Param('paperId') paperId: string) {
     return this.usersService.removeFavorite(req.user.id, paperId);
+  }
+
+  @Get('me/you-might-like')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Personalized paper recommendations for the current user',
+    description: 'Alias of GET /papers/you-might-like. Requires paperTopics=cs.AI,cs.AR',
+  })
+  @ApiQuery({ name: 'paperTopics', required: true, example: 'cs.AI,cs.AR' })
+  getMyYouMightLike(@Request() req, @Query() query: YouMightLikeQueryDto) {
+    return this.papersService.getYouMightLike(req.user.id, query);
   }
 
   @Get('me/history')

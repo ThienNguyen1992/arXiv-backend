@@ -7,9 +7,10 @@ import * as http from 'http';
 import { IncomingMessage } from 'http';
 import { verifyLocalJsonFile } from '../common/utils/file.util';
 import { PaperScorer, PaperScoringInput } from '../common/utils/paper-score.util';
-import { Category } from '../categories/entities/category.entity';
-import { Topic } from '../topics/entities/topic.entity';
 import { Paper } from '../papers/entities/paper.entity';
+import { CategoriesService } from '../categories/categories.service';
+import { PaperDuplicatesService } from '../papers/paper-duplicates.service';
+import { collectArxivTopicCodesFromCategoriesField } from '../common/utils/arxiv-taxonomy.util';
 import { PaperTopic } from '../papers/entities/paper-topic.entity';
 import { PaperVersion } from '../papers/entities/paper-version.entity';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
@@ -17,10 +18,13 @@ import { ElasticsearchService } from '@nestjs/elasticsearch';
 @Injectable()
 export class DataImportService {
   private readonly logger = new Logger(DataImportService.name);
+  private taxonomyBootstrapped = false;
 
   constructor(
     private readonly dataSource: DataSource,
     private readonly elasticsearchService: ElasticsearchService,
+    private readonly categoriesService: CategoriesService,
+    private readonly paperDuplicatesService: PaperDuplicatesService,
   ) {}
 
   async importLocalData(path: string) {
@@ -119,7 +123,56 @@ export class DataImportService {
     }
   }
 
+  async syncTopicsFromElasticsearch() {
+    await this.bootstrapTaxonomy();
+
+    const response = await this.elasticsearchService.search({
+      index: 'papers',
+      size: 0,
+      aggs: {
+        categories: {
+          terms: {
+            field: 'categories.keyword',
+            size: 1000,
+          },
+        },
+      },
+    });
+
+    const buckets = (response.aggregations as any)?.categories?.buckets ?? [];
+    const codes = buckets.map((bucket: { key: string }) => bucket.key);
+    const topicIdMap = await this.categoriesService.ensureTopicsForCodes(codes);
+
+    return {
+      message: 'Topics synced from Elasticsearch categories.',
+      categoriesFoundInElasticsearch: codes.length,
+      topicsEnsured: topicIdMap.size,
+    };
+  }
+
+  private async bootstrapTaxonomy() {
+    if (this.taxonomyBootstrapped) {
+      return;
+    }
+
+    const result = await this.categoriesService.ensureBundledTaxonomy();
+    this.taxonomyBootstrapped = true;
+    this.logger.log(
+      `Bootstrapped arXiv taxonomy: ${result.categoriesImported} categories, ${result.topicsImported} topics`,
+    );
+  }
+
+  private collectBatchTopicCodes(batch: any[]): string[] {
+    return [
+      ...new Set(
+        batch.flatMap((item) => collectArxivTopicCodesFromCategoriesField(item.categories)),
+      ),
+    ];
+  }
+
   private async processBatch(batch: any[]) {
+    await this.bootstrapTaxonomy();
+
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -127,46 +180,18 @@ export class DataImportService {
     const scorer = new PaperScorer();
 
     try {
+      const batchTopicCodes = this.collectBatchTopicCodes(batch);
+      const topicIdMap = await this.categoriesService.ensureTopicsForCodes(
+        batchTopicCodes,
+        queryRunner.manager,
+      );
+
       for (const item of batch) {
-        // 1. Process Categories & Topics
-        let primaryTopicId: number | null = null;
-        const topicIds: number[] = [];
-
-        if (item.categories) {
-          const catList = item.categories.split(' ');
-          for (let i = 0; i < catList.length; i++) {
-            const topicCode = catList[i];
-            const catCode = topicCode.split('.')[0];
-            
-            // Insert Category if not exists
-            await queryRunner.manager.createQueryBuilder()
-              .insert()
-              .into(Category)
-              .values({ code: catCode, title: catCode })
-              .orIgnore()
-              .execute();
-
-            const cat = await queryRunner.manager.findOne(Category, { where: { code: catCode } });
-            
-            if (cat) {
-              // Insert Topic if not exists
-              await queryRunner.manager.createQueryBuilder()
-                .insert()
-                .into(Topic)
-                .values({ code: topicCode, title: topicCode, category_id: cat.id })
-                .orIgnore()
-                .execute();
-
-              const topic = await queryRunner.manager.findOne(Topic, { where: { code: topicCode } });
-              if (topic) {
-                if (!topicIds.includes(topic.id)) {
-                  topicIds.push(topic.id);
-                }
-                if (i === 0) primaryTopicId = topic.id;
-              }
-            }
-          }
-        }
+        const catList = collectArxivTopicCodesFromCategoriesField(item.categories);
+        const topicIds = catList
+          .map((code) => topicIdMap.get(code))
+          .filter((id): id is number => typeof id === 'number');
+        const primaryTopicId = topicIds[0] ?? null;
 
         // 2. Process Paper metadata
         const publishedDate = item.versions && item.versions.length > 0 
@@ -314,6 +339,12 @@ export class DataImportService {
 
   private async processElasticsearchBatch(batch: any[]) {
     try {
+      await this.bootstrapTaxonomy();
+      const batchTopicCodes = this.collectBatchTopicCodes(batch);
+      if (batchTopicCodes.length > 0) {
+        await this.categoriesService.ensureTopicsForCodes(batchTopicCodes);
+      }
+
       const scorer = new PaperScorer();
       
       const operations = batch.flatMap(item => {
@@ -352,12 +383,28 @@ export class DataImportService {
             created_at: new Date(),
             current_version: item.versions ? item.versions.length : 1,
             score: scoreResult.total_score,
-            pdf_url: `https://arxiv.org/pdf/${item.id}.pdf`
+            pdf_url: `https://arxiv.org/pdf/${item.id}.pdf`,
+            show_on_feed: true,
+            duplicate_of_arxiv_id: null,
           }
         ];
       });
 
       const bulkResponse = await this.elasticsearchService.bulk({ refresh: true, operations });
+
+      await this.paperDuplicatesService.processBatchDuplicates(
+        batch.map((item) => ({
+          arxiv_id: item.id,
+          title: item.title ? item.title.replace(/\s+/g, ' ').trim() : 'Untitled',
+          abstract: item.abstract ? item.abstract.replace(/\s+/g, ' ').trim() : '',
+          authors: item.authors ?? null,
+          doi: item.doi ?? null,
+          published_at:
+            item.versions && item.versions.length > 0
+              ? new Date(item.versions[0].created)
+              : new Date(),
+        })),
+      );
 
       if (bulkResponse.errors) {
         const erroredDocuments: any[] = [];

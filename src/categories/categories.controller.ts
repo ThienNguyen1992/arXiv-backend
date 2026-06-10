@@ -43,6 +43,15 @@ export class CategoriesController {
     return this.categoriesService.syncArxivTaxonomy();
   }
 
+  @Post('sync-bundled')
+  @ApiOperation({
+    summary: 'Store bundled arXiv categories/topics without fetching arXiv.org',
+    description: 'Includes physics archives such as hep-th, cond-mat, quant-ph, etc.',
+  })
+  syncBundledTaxonomy() {
+    return this.categoriesService.ensureBundledTaxonomy();
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get a category by ID' })
   findOne(@Param('id') id: string) {
