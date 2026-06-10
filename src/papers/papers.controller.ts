@@ -6,7 +6,7 @@ import { CreatePaperVersionDto } from './dto/create-paper-version.dto';
 import { AddPaperTopicDto } from './dto/add-paper-topic.dto';
 import { ArxivPapersQueryDto } from './dto/arxiv-papers-query.dto';
 import { ArxivTimeQueryDto } from './dto/arxiv-time-query.dto';
-import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { PaperFilterDto } from './dto/paper-filter.dto';
 import { YouMightLikeQueryDto } from './dto/you-might-like-query.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
@@ -136,6 +136,33 @@ export class PapersController {
   @ApiResponse({ status: 200, description: 'Score calculated and updated.' })
   calculateScoreForOne(@Param('id') id: string) {
     return this.papersService.calculateScoreForPaper(id);
+  }
+
+  @Get('es/:arxivId/related')
+  @ApiOperation({ summary: 'Gợi ý paper liên quan (Thuật toán 4: Cosine/TF-IDF)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, example: 5 })
+  findRelated(@Param('arxivId') arxivId: string, @Query('limit') limit?: number) {
+    return this.papersService.findRelatedPapers(arxivId, limit ? Number(limit) : 5);
+  }
+
+  @Get('es/duplicates/list')
+  @ApiOperation({ summary: 'Lấy danh sách các bài báo bị đánh dấu là duplicate. Tùy chọn lọc theo parentId' })
+  @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
+  @ApiQuery({ name: 'size', required: false, type: Number, example: 20 })
+  @ApiQuery({ name: 'parentId', required: false, type: String, description: 'Lọc các bài duplicate của 1 arxiv_id cụ thể' })
+  getDuplicates(
+    @Query('page') page?: number,
+    @Query('size') size?: number,
+    @Query('parentId') parentId?: string
+  ) {
+    return this.papersService.getDuplicates(page || 1, size || 20, parentId);
+  }
+
+  @Post('es/check-duplicate')
+  @ApiOperation({ summary: 'Phát hiện near-duplicate (Thuật toán 4: Cosine/TF-IDF với threshold > 85%)' })
+  @ApiBody({ schema: { example: { title: 'Deep learning in medical imaging', abstract: 'We propose a CNN...' } } })
+  checkFuzzyDuplicate(@Body() body: { title: string, abstract: string }) {
+    return this.papersService.checkFuzzyDuplicate(body.title, body.abstract);
   }
 
   @Get(':id')

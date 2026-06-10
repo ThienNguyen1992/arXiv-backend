@@ -17,7 +17,7 @@ export class SchedulerService {
   ) {}
 
   // @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT) // Chạy vào 00:00 mỗi ngày
-  @Cron(CronExpression.EVERY_10_SECONDS)
+  @Cron(CronExpression.EVERY_12_HOURS)
   async handleDailyArxivFetch() {
     this.logger.log('Starting daily arXiv fetch cronjob...');
 
@@ -57,8 +57,8 @@ export class SchedulerService {
 
       this.logger.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-      let newCount = 0;
       let duplicateCount = 0;
+      let newCount = 0;
       const newPapers: typeof papers = [];
 
 

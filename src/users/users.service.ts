@@ -180,6 +180,7 @@ export class UsersService {
   async getHistory(userId: string, query: PaginationQueryDto) {
     const { page, size, skip, take } = getPagination(query);
 
+    // 1. Fetch paginated history from Postgres to preserve exact viewed_at order
     const [history, total] = await this.historyRepository.findAndCount({
       where: { user_id: userId },
       order: { viewed_at: 'DESC' },
