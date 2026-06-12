@@ -7,6 +7,7 @@ import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth, ApiQuery }
 import { User } from './entities/user.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { UserTopicsQueryDto } from './dto/user-topics-query.dto';
 import { YouMightLikeQueryDto } from '../papers/dto/you-might-like-query.dto';
 import { PapersService } from '../papers/papers.service';
 
@@ -41,8 +42,9 @@ export class UsersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get topics selected by the current user' })
   @ApiQuery({ name: 'page', required: false, example: 1 })
-  @ApiQuery({ name: 'size', required: false, example: 20 })
-  getMyTopics(@Request() req, @Query() query: PaginationQueryDto) {
+  @ApiQuery({ name: 'size', required: false, example: 500, description: 'Default 500 for user topics' })
+  @ApiQuery({ name: 'all', required: false, example: true, description: 'Return all selected topics' })
+  getMyTopics(@Request() req, @Query() query: UserTopicsQueryDto) {
     return this.usersService.getTopics(req.user.id, query);
   }
 
