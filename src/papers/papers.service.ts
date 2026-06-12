@@ -79,16 +79,20 @@ export class PapersService {
         .andWhere('t_filter.code IN (:...topicCodes)', { topicCodes: query.topics });
     }
 
-    if (query.q) {
-      qb.andWhere('(paper.title ILIKE :q OR paper.authors ILIKE :q)', { q: `%${query.q}%` });
+    const titleTerm = query.title?.trim();
+    const authorTerm = query.author?.trim();
+    const abstractTerm = query.abstract?.trim() || query.q?.trim();
+
+    if (titleTerm) {
+      qb.andWhere('paper.title ILIKE :title', { title: `%${titleTerm}%` });
     }
 
-    if (query.title) {
-      qb.andWhere('paper.title ILIKE :title', { title: `%${query.title}%` });
+    if (authorTerm) {
+      qb.andWhere('paper.authors ILIKE :author', { author: `%${authorTerm}%` });
     }
 
-    if (query.author) {
-      qb.andWhere('paper.authors ILIKE :author', { author: `%${query.author}%` });
+    if (abstractTerm) {
+      qb.andWhere('paper.abstract ILIKE :abstract', { abstract: `%${abstractTerm}%` });
     }
 
     qb.orderBy('paper.published_at', 'DESC')
@@ -429,9 +433,7 @@ export class PapersService {
 
     const isFeedStyleQuery =
       selectedTopics.length > 0 &&
-      !query.q &&
-      !query.title &&
-      !query.author &&
+      !this.hasTextSearchFilters(query) &&
       query.sortBy !== 'score';
 
     const hideFeedDuplicates = isFeedStyleQuery;
@@ -486,6 +488,18 @@ export class PapersService {
     return hash;
   }
 
+  private hasTextSearchFilters(query: PaperFilterDto): boolean {
+    return [query.title, query.author, query.abstract, query.q].some(
+      (value) => typeof value === 'string' && value.trim().length > 0,
+    );
+  }
+
+  private getAbstractSearchTerm(query: PaperFilterDto): string | undefined {
+    const abstract = query.abstract?.trim();
+    const q = query.q?.trim();
+    return abstract || q || undefined;
+  }
+
   private buildElasticsearchFilterQuery(query: PaperFilterDto, hideFeedDuplicates = false) {
     const must: any[] = [];
     const mustNot: any[] = [];
@@ -496,24 +510,25 @@ export class PapersService {
       });
     }
 
-    if (query.q) {
+    const titleTerm = query.title?.trim();
+    const authorTerm = query.author?.trim();
+    const abstractTerm = this.getAbstractSearchTerm(query);
+
+    if (titleTerm) {
       must.push({
-        multi_match: {
-          query: query.q,
-          fields: ['title', 'authors'],
-        },
+        match: { title: titleTerm },
       });
     }
 
-    if (query.title) {
+    if (authorTerm) {
       must.push({
-        match: { title: query.title },
+        match: { authors: authorTerm },
       });
     }
 
-    if (query.author) {
+    if (abstractTerm) {
       must.push({
-        match: { authors: query.author },
+        match: { abstract: abstractTerm },
       });
     }
 
@@ -769,7 +784,9 @@ export class PapersService {
 
       return normalizedIds.map((id) => map.get(id)).filter(Boolean);
     } catch (error) {
-      throw new InternalServerErrorException(`Elasticsearch fetch by arxiv ids failed: ${error.message}`);
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(`Elasticsearch fetch by arxiv ids failed: ${message}`);
+      return [];
     }
   }
 
@@ -792,26 +809,37 @@ export class PapersService {
     }
   }
 
+  private async safeCountSimilarPapers(arxivId: string): Promise<number> {
+    try {
+      return await this.paperDuplicatesService.countSimilarPapers(arxivId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(`Could not count similar papers for ${arxivId}: ${message}`);
+      return 0;
+    }
+  }
+
   async findOneFromElasticsearch(arxivId: string) {
     const normalizedArxivId = this.normalizeArxivId(arxivId);
 
     const esPaper = await this.getElasticsearchPaperByArxivId(normalizedArxivId);
     if (esPaper) {
-      const similarCount = await this.paperDuplicatesService.countSimilarPapers(normalizedArxivId);
+      const similarCount = await this.safeCountSimilarPapers(normalizedArxivId);
       return { ...esPaper, similarCount };
     }
 
     const livePaper = await this.fetchArxivPaperDetail(normalizedArxivId);
     if (livePaper) {
-      const similarCount = await this.paperDuplicatesService.countSimilarPapers(normalizedArxivId);
+      const similarCount = await this.safeCountSimilarPapers(normalizedArxivId);
       return { ...livePaper, similarCount };
     }
 
     throw new NotFoundException(`Paper ${arxivId} not found`);
   }
 
-  getSimilarPapers(arxivId: string, limit = 10) {
-    return this.paperDuplicatesService.getSimilarPapers(arxivId, limit);
+  async getSimilarPapers(arxivId: string, limit = 10) {
+    const data = await this.paperDuplicatesService.getSimilarPapers(arxivId, limit);
+    return { data };
   }
 
   async findOne(id: string) {
@@ -958,6 +986,35 @@ export class PapersService {
       source: url.toString(),
       timeRange: { startDate: query.startDate, endDate: query.endDate },
     };
+  }
+
+  async fetchAllArxivPapersByTimeRange(
+    startDate: string,
+    endDate: string,
+    pageSize = 1000,
+  ): Promise<{ data: ArxivPaperDto[]; total: number; pagesFetched: number }> {
+    const all: ArxivPaperDto[] = [];
+    let page = 1;
+    let total = 0;
+
+    while (true) {
+      const query = new ArxivTimeQueryDto();
+      query.startDate = startDate;
+      query.endDate = endDate;
+      query.page = page;
+      query.size = pageSize;
+
+      const response = await this.fetchArxivPapersByTimeRange(query);
+      total = response.meta.total;
+      all.push(...response.data);
+
+      if (response.data.length === 0 || all.length >= total) {
+        return { data: all, total, pagesFetched: page };
+      }
+
+      page += 1;
+      await this.sleep(3000);
+    }
   }
 
   async fetchArxivFeedForUser(userId: string, query: PaginationQueryDto) {
@@ -1143,6 +1200,10 @@ export class PapersService {
       source: url.toString(),
       selectedTopics: topicCodes,
     };
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async fetchTextWithTimeout(url: string, timeoutMs = 8000) {

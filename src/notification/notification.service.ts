@@ -7,8 +7,13 @@ import { Paper } from '../papers/entities/paper.entity';
 import { User } from '../users/entities/user.entity';
 import { PaperTopic } from '../papers/entities/paper-topic.entity';
 import { ArxivPaperDto } from '../papers/papers.service';
+import {
+  NotificationPaperSnapshot,
+  snapshotFromArxivPaper,
+  snapshotFromDbPaper,
+} from './notification-paper.snapshot';
 
-export type { ArxivPaperDto };
+export type { ArxivPaperDto, NotificationPaperSnapshot };
 
 @Injectable()
 export class NotificationService {
@@ -121,8 +126,8 @@ export class NotificationService {
 
         const notification = this.notificationRepository.create({
           userId: user.id,
-          title: `${papersForTopic.length} bài báo mới về ${topic.code}`,
-          message: `Có ${papersForTopic.length} bài báo arXiv mới trong topic ${topic.code} (${topic.title}) hôm nay.`,
+          title: `${papersForTopic.length} new papers in ${topic.code}`,
+          message: `${papersForTopic.length} new arXiv papers in ${topic.code} (${topic.title}) today.`,
           content: papersForTopic
             .slice(0, 3) // preview 3 bài đầu
             .map((p) => `• ${p.title}`)
@@ -131,16 +136,9 @@ export class NotificationService {
           topicCode: topic.code,
           type: 'topic_match',
           isRead: false,
-          data: papersForTopic.map((p) => ({
-            arxiv_id: p.id,
-            title: p.title,
-            summary: p.summary?.substring(0, 200),
-            authors: p.authors,
-            publishedDate: p.publishedDate,
-            pdfLink: p.pdfLink || `https://arxiv.org/pdf/${p.id}.pdf`,
-            topicId: topic.id,
-            topicCode: topic.code,
-          })),
+          data: papersForTopic.map((p) =>
+            snapshotFromArxivPaper(p, { id: topic.id, code: topic.code }),
+          ),
         });
 
         const saved = await this.notificationRepository.save(notification);
@@ -179,8 +177,8 @@ export class NotificationService {
 
         const notification = this.notificationRepository.create({
           userId: user.id,
-          title: `${matchedPapers.length} bài báo mới về ${topic.code}`,
-          message: `Có ${matchedPapers.length} bài báo mới trong topic ${topic.code} (${topic.title}).`,
+          title: `${matchedPapers.length} new papers in ${topic.code}`,
+          message: `${matchedPapers.length} new papers in ${topic.code} (${topic.title}).`,
           content: matchedPapers
             .slice(0, 3)
             .map((p) => `• ${p.title}`)
@@ -189,15 +187,9 @@ export class NotificationService {
           topicCode: topic.code,
           type: 'topic_match',
           isRead: false,
-          data: matchedPapers.map((p) => ({
-            id: p.id,
-            arxiv_id: p.arxiv_id,
-            title: p.title,
-            abstract: p.abstract?.substring(0, 200),
-            published_at: p.published_at,
-            topicId: topic.id,
-            topicCode: topic.code,
-          })),
+          data: matchedPapers.map((p) =>
+            snapshotFromDbPaper(p, { id: topic.id, code: topic.code }),
+          ),
         });
 
         const saved = await this.notificationRepository.save(notification);
@@ -233,35 +225,56 @@ export class NotificationService {
     return this.notificationRepository.save(entity);
   }
 
-  async getNotifications(userId: string, page = 1, limit = 5): Promise<any> {
-    const skip = (page - 1) * limit;
+  async getNotifications(
+    userId: string,
+    options: {
+      page?: number;
+      size?: number;
+      unreadOnly?: boolean;
+    } = {},
+  ) {
+    const page = options.page ?? 1;
+    const size = options.size ?? 5;
+    const unreadOnly = options.unreadOnly ?? false;
 
-    const [data, total] = await this.notificationRepository.findAndCount({
-      where: [
-        { userId },           // notification riêng cho user
-        { userId: IsNull() }, // broadcast tới tất cả
-      ],
+    const baseWhere = unreadOnly
+      ? [
+          { userId, isRead: false },
+          { userId: IsNull(), isRead: false },
+        ]
+      : [{ userId }, { userId: IsNull() }];
+
+    const [rows, total] = await this.notificationRepository.findAndCount({
+      where: baseWhere,
       order: { createdAt: 'DESC' },
-      skip: skip,
-      take: limit,
-    });
-
-    const unreadCount = await this.notificationRepository.count({
-      where: [
-        { userId, isRead: false },
-        { userId: IsNull(), isRead: false },
-      ],
+      skip: (page - 1) * size,
+      take: size,
     });
 
     return {
-      data,
+      data: rows.map((n) => this.toNotificationResponse(n)),
       meta: {
         page,
-        limit,
+        size,
         total,
-        totalPages: Math.ceil(total / limit),
-        unreadCount,
+        totalPages: Math.ceil(total / size),
       },
+    };
+  }
+
+  private toNotificationResponse(notification: Notification) {
+    const papers = (notification.data ?? []) as NotificationPaperSnapshot[];
+    return {
+      id: notification.id,
+      title: notification.title,
+      message: notification.message,
+      content: notification.content,
+      type: notification.type,
+      topicId: notification.topicId,
+      topicCode: notification.topicCode,
+      isRead: notification.isRead,
+      createdAt: notification.createdAt,
+      papers,
     };
   }
 

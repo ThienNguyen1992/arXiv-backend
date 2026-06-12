@@ -1,23 +1,45 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+// import { Cron, CronExpression } from '@nestjs/schedule';
 import { PapersService } from '../papers/papers.service';
-import { ElasticsearchService } from '@nestjs/elasticsearch';
 import { ArxivTimeQueryDto } from '../papers/dto/arxiv-time-query.dto';
 import { NotificationService } from '../notification/notification.service';
-import { PaperScorer } from '../common/utils/paper-score.util';
+import {
+  CronArxivPaperInput,
+  IngestArxivPaperResult,
+  PaperDuplicatesService,
+} from '../papers/paper-duplicates.service';
 
 @Injectable()
-export class SchedulerService {
+export class SchedulerService implements OnModuleInit {
   private readonly logger = new Logger(SchedulerService.name);
 
   constructor(
     private readonly papersService: PapersService,
-    private readonly elasticsearchService: ElasticsearchService,
     private readonly notificationService: NotificationService,
+    private readonly paperDuplicatesService: PaperDuplicatesService,
+    private readonly configService: ConfigService,
   ) {}
 
-  // @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT) // Chạy vào 00:00 mỗi ngày
-  @Cron(CronExpression.EVERY_12_HOURS)
+  onModuleInit() {
+    const enabled = this.configService.get<string>('RUN_ARXIV_CRON_ON_START') === 'true';
+
+    if (!enabled) {
+      this.logger.log(
+        'Startup arXiv fetch skipped. Set RUN_ARXIV_CRON_ON_START=true in backend/.env then restart.',
+      );
+      return;
+    }
+
+    this.logger.log('RUN_ARXIV_CRON_ON_START=true — running arXiv fetch once on startup...');
+    void this.handleDailyArxivFetch().catch((error) => {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.error(`Startup arXiv fetch failed: ${message}`, error instanceof Error ? error.stack : undefined);
+    });
+  }
+
+  // @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  // @Cron(CronExpression.EVERY_12_HOURS)
   async handleDailyArxivFetch() {
     this.logger.log('Starting daily arXiv fetch cronjob...');
 
@@ -32,139 +54,81 @@ export class SchedulerService {
     const query = new ArxivTimeQueryDto();
     query.startDate = targetDate;
     query.endDate = targetDate;
-    query.page = 1;
-    query.size = 1000;
 
-    return this.runManual(query);
+    // return this.runManual(query);
+    return 10
   }
 
   async runManual(query: ArxivTimeQueryDto) {
-    this.logger.log(`Fetching papers from ${query.startDate} to ${query.endDate}`);
+    const ingestLimit = Number(this.configService.get<string>('CRON_INGEST_PAPER_LIMIT', '1'));
+    const safeLimit = Number.isFinite(ingestLimit) && ingestLimit > 0 ? ingestLimit : 1;
+    const reingestCopyEnv = this.configService.get<string>('CRON_REINGEST_AS_DUPLICATE_COPY');
+    const reingestAsCopy =
+      reingestCopyEnv === 'true' ||
+      (reingestCopyEnv !== 'false' && safeLimit === 1);
+
+    this.logger.log(
+      `Fetching papers from ${query.startDate} to ${query.endDate} (ingest limit=${safeLimit}, reingestAsCopy=${reingestAsCopy})`,
+    );
 
     try {
-      const response = await this.papersService.fetchArxivPapersByTimeRange(query);
-      const papers = response.data;
+      const response = await this.papersService.fetchAllArxivPapersByTimeRange(
+        query.startDate,
+        query.endDate,
+      );
+      const papersToIngest = response.data.slice(0, safeLimit);
+      console.log("🚀 ~ SchedulerService ~ runManual ~ papersToIngest:", papersToIngest)
 
-      this.logger.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      this.logger.log(`📦 Fetched ${papers.length} papers from arXiv [${query.startDate} to ${query.endDate}]`);
-      this.logger.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      this.logger.log(
+        `Fetched ${response.data.length}/${response.total} papers — processing first ${papersToIngest.length}`,
+      );
 
-      // Log toàn bộ data từng paper
-      papers.forEach((paper, index) => {
-        console.log(`\n[${index + 1}/${papers.length}] ──────────────────────────`);
-        console.log(JSON.stringify(paper, null, 2));
-      });
-
-      this.logger.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-
-      let duplicateCount = 0;
-      let newCount = 0;
-      const newPapers: typeof papers = [];
-
-
-      for (const paper of papers) {
-        // ── Duplicate check: kiểm tra ES ─────────────────────────────────
-        // const exists = await this.elasticsearchService.exists({
-        //   index: 'papers',
-        //   id: paper.id,
-        // });
-        //
-        // if (exists) {
-        //   this.logger.log(`[DUPLICATE] ${paper.id} - ${paper.title}`);
-        //   duplicateCount++;
-        //   continue;
-        // }
-        // [TESTING] Tạm TẮT check duplicate để force lọt xuống push Notification!
-
-        // ─────────────────────────────────────────────────────────────────
-        // TÍNH NĂNG 1: Lưu vào Elasticsearch (đang TẮT)
-        // TODO: Bỏ comment khi sẵn sàng bật
-        // ─────────────────────────────────────────────────────────────────
-        // const publishedDate = paper.publishedDate ? new Date(paper.publishedDate) : new Date();
-        // const updatedDate = paper.updatedDate ? new Date(paper.updatedDate) : new Date();
-        //
-        // // Tính điểm cho paper
-        // const scorer = new PaperScorer();
-        // const scoreResult = scorer.calculateScore({
-        //   published_date: publishedDate,
-        //   updated_date: updatedDate,
-        //   abstract: paper.summary,
-        //   version: 1,
-        //   authors: [],
-        // });
-        //
-        // await this.elasticsearchService.index({
-        //   index: 'papers',
-        //   id: paper.id,
-        //   document: {
-        //     arxiv_id: paper.id,
-        //     title: paper.title,
-        //     abstract: paper.summary,
-        //     authors: paper.authors.join(', '),
-        //     authors_parsed: null,
-        //     doi: null,
-        //     journal_ref: null,
-        //     license: null,
-        //     comments: null,
-        //     categories: paper.allCategories,
-        //     primary_category:
-        //       paper.allCategories.length > 0
-        //         ? paper.allCategories[0].split('.')[0]
-        //         : null,
-        //     published_at: publishedDate,
-        //     published_year: publishedDate.getFullYear(),
-        //     published_month: publishedDate.getMonth() + 1,
-        //     updated_at: updatedDate,
-        //     created_at: new Date(),
-        //     current_version: 1,
-        //     score: scoreResult.total_score,
-        //     pdf_url: paper.pdfLink || `https://arxiv.org/pdf/${paper.id}.pdf`,
-        //   },
-        // });
-        // ─────────────────────────────────────────────────────────────────
-
-        newPapers.push(paper);
-        newCount++;
+      if (papersToIngest.length === 0) {
+        return {
+          success: true,
+          fetched: 0,
+          ingested: 0,
+          message: 'No papers to ingest',
+        };
       }
 
-      this.logger.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      this.logger.log(`✅ NEW:       ${newCount} papers`);
-      this.logger.log(`🔁 DUPLICATE: ${duplicateCount} papers`);
-      this.logger.log(`📊 TOTAL:     ${papers.length} papers fetched`);
+      const ingestResults: IngestArxivPaperResult[] = [];
+      for (const paper of papersToIngest) {
+        const result = await this.paperDuplicatesService.ingestArxivPaper(
+          paper as CronArxivPaperInput,
+          { reingestAsCopy },
+        );
+        ingestResults.push(result);
 
-      if (newPapers.length > 0) {
-        this.logger.log(`─── New papers to notify ───────────────────────`);
-        newPapers.forEach((p, i) => {
-          this.logger.log(
-            `  [NEW ${i + 1}] ${p.id} | [${p.allCategories?.join(', ')}] | ${p.title?.substring(0, 70)}`,
-          );
-        });
+        this.logger.log(
+          `[INGEST] ${result.arxiv_id} | duplicate=${result.is_duplicate} | show_on_feed=${result.show_on_feed} | canonical=${result.canonical_arxiv_id ?? 'n/a'}`,
+        );
       }
-      this.logger.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-      // ─────────────────────────────────────────────────────────────────
-      // TÍNH NĂNG 2: Push notification theo topic của từng user (BẬT)
-      // ─────────────────────────────────────────────────────────────────
-      if (newPapers.length > 0) {
-        this.logger.log(`🔔 Pushing notifications for ${newPapers.length} new papers...`);
-        // await this.notificationService.pushFromArxivPapers(newPapers);
-        this.logger.log(`🔔 Notification push done.`);
+      const papersForNotification = papersToIngest.filter(
+        (_, index) => ingestResults[index]?.show_on_feed,
+      );
+
+      if (papersForNotification.length > 0) {
+        this.logger.log(`Pushing notifications for ${papersForNotification.length} feed-visible paper(s)...`);
+        await this.notificationService.pushFromArxivPapers(papersForNotification);
       } else {
-        this.logger.log(`ℹ️  No new papers — no notifications sent.`);
+        this.logger.log('No feed-visible papers — notifications skipped.');
       }
-      // ─────────────────────────────────────────────────────────────────
 
       return {
         success: true,
-        fetched: papers.length,
-        new: newCount,
-        duplicates: duplicateCount,
-        message: newPapers.length > 0 ? `Pushed notifications for ${newPapers.length} new papers` : 'No new papers to push'
+        fetched: response.data.length,
+        arxivTotal: response.total,
+        ingested: ingestResults.length,
+        duplicates: ingestResults.filter((item) => item.is_duplicate).length,
+        notified: papersForNotification.length,
+        results: ingestResults,
       };
-
     } catch (error) {
-      this.logger.error(`Error in daily arXiv fetch: ${error.message}`, error.stack);
-      return { success: false, error: error.message };
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.error(`Error in daily arXiv fetch: ${message}`, error instanceof Error ? error.stack : undefined);
+      return { success: false, error: message };
     }
   }
 }

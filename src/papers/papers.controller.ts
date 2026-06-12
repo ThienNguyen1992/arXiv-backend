@@ -9,6 +9,7 @@ import { ArxivTimeQueryDto } from './dto/arxiv-time-query.dto';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { PaperFilterDto } from './dto/paper-filter.dto';
 import { YouMightLikeQueryDto } from './dto/you-might-like-query.dto';
+import { SimilarPapersQueryDto } from './dto/similar-papers-query.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
@@ -30,9 +31,10 @@ export class PapersController {
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'size', required: false, example: 20 })
   @ApiQuery({ name: 'topics', required: false, isArray: true, example: ['cs.AI', 'cs.LG'], description: 'Filter by topic codes' })
-  @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in both title and author' })
+  @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in abstract (alias of abstract)' })
   @ApiQuery({ name: 'title', required: false, example: 'neural networks', description: 'Search only in title' })
   @ApiQuery({ name: 'author', required: false, example: 'Andrew Ng', description: 'Search only in author' })
+  @ApiQuery({ name: 'abstract', required: false, example: 'transformer', description: 'Search only in abstract' })
   findAll(@Query() query: PaperFilterDto) {
     return this.papersService.findAll(query);
   }
@@ -43,14 +45,15 @@ export class PapersController {
   @ApiOperation({
     summary: 'Get papers from Elasticsearch. Supports pagination, topic filter, and text search.',
     description:
-      'With Bearer token and no topics query: uses the current user topics automatically. Multiple topics are interleaved (round-robin); single-topic feeds use daily randomized order. Explicit topics query overrides user topics.',
+      'Text search: title/author/abstract are independent filters (combined with AND). Leave all empty for personalized feed. With Bearer token and no topics query: uses user topics automatically.',
   })
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'size', required: false, example: 20 })
   @ApiQuery({ name: 'topics', required: false, isArray: true, example: ['cs.AI', 'cs.LG'], description: 'Filter by topic codes. Overrides user topics when provided.' })
-  @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in both title and author' })
+  @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in abstract (alias of abstract)' })
   @ApiQuery({ name: 'title', required: false, example: 'neural networks', description: 'Search only in title' })
   @ApiQuery({ name: 'author', required: false, example: 'Andrew Ng', description: 'Search only in author' })
+  @ApiQuery({ name: 'abstract', required: false, example: 'transformer', description: 'Search only in abstract' })
   @ApiQuery({ name: 'sortBy', required: false, enum: ['date', 'score'], description: 'Sort by date or score (default is date)' })
   searchElasticsearch(@Query() query: PaperFilterDto, @Req() req: { user?: { id: string } }) {
     return this.papersService.searchElasticsearch(query, req.user?.id);
@@ -75,12 +78,15 @@ export class PapersController {
 
   @Get('es/:arxivId/similar')
   @ApiOperation({
-    summary: 'Get similar / duplicate papers for a paper detail page',
-    description: 'Separate from detail API so the detail page can load fast and fetch similar papers in parallel.',
+    summary: 'Get duplicate/similar papers for a paper detail page',
+    description:
+      'No pagination — optional limit only (default 10, max 50). Returns empty list for duplicate papers.',
   })
-  @ApiQuery({ name: 'limit', required: false, example: 10 })
-  getSimilarPapers(@Param('arxivId') arxivId: string, @Query('limit') limit?: string) {
-    return this.papersService.getSimilarPapers(arxivId, limit ? Number(limit) : 10);
+  getSimilarPapers(
+    @Param('arxivId') arxivId: string,
+    @Query() query: SimilarPapersQueryDto,
+  ) {
+    return this.papersService.getSimilarPapers(arxivId, query.limit);
   }
 
   @Get('es/:arxivId')

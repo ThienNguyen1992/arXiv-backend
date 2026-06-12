@@ -1,8 +1,9 @@
-import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, Param } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
 import { DataImportService } from './data-import.service';
 import { ImportLocalDataDto } from './dto/import-local-data.dto';
 import { ImportUrlDataDto } from './dto/import-url-data.dto';
+import { SummarizeBackfillDto } from './dto/summarize-backfill.dto';
 
 @ApiTags('data-import')
 @Controller('data-import')
@@ -48,5 +49,26 @@ export class DataImportController {
   @ApiResponse({ status: HttpStatus.OK, description: 'Topics synced successfully.' })
   async syncTopics() {
     return await this.dataImportService.syncTopicsFromElasticsearch();
+  }
+
+  @Post('elasticsearch/summarize-backfill')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Generate description/key_points from abstract for existing Elasticsearch papers (Ollama)',
+    description:
+      'Runs in background per arXiv topic: fetches up to papersPerTopic newest papers per topic (default 300), then summarizes via Ollama. Skips papers that already have description unless force=true. Omit topics to use all topic codes found in Elasticsearch.',
+  })
+  @ApiBody({ type: SummarizeBackfillDto })
+  async summarizeElasticsearchBackfill(@Body() dto: SummarizeBackfillDto) {
+    return this.dataImportService.summarizeElasticsearchBackfill(dto);
+  }
+
+  @Post('elasticsearch/summarize/:arxivId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Summarize one Elasticsearch paper by arXiv ID (Ollama)',
+  })
+  async summarizeElasticsearchPaper(@Param('arxivId') arxivId: string) {
+    return this.dataImportService.summarizeElasticsearchPaper(arxivId);
   }
 }

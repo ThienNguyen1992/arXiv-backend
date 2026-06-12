@@ -1,10 +1,24 @@
-import { Controller, Post, Body, Get, Param, Patch, Query } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Param,
+  Patch,
+  Query,
+  UseGuards,
+  Request,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { NotificationService } from './notification.service';
 import { NotificationCron } from './notification.cron';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Paper } from '../papers/entities/paper.entity';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { NotificationQueryDto } from './dto/notification-query.dto';
 
+@ApiTags('notifications')
 @Controller('notifications')
 export class NotificationController {
   constructor(
@@ -14,7 +28,6 @@ export class NotificationController {
     private paperRepository: Repository<Paper>,
   ) {}
 
-  // ─── TEST: Push WebSocket KHÔNG lưu DB ─────────────────────────────────
   @Post('test-push')
   async testPush(
     @Body() body?: { title?: string; message?: string; data?: any },
@@ -22,7 +35,6 @@ export class NotificationController {
     return this.notificationService.pushTestNotification(body);
   }
 
-  // ─── Trigger manual (lưu DB + push WS) ─────────────────────────────────
   @Post('trigger')
   async triggerNotification(
     @Body() body: { startTime: string; endTime: string },
@@ -32,39 +44,61 @@ export class NotificationController {
     return this.notificationCron.runManual(startTime, endTime);
   }
 
-  // ─── Lấy danh sách notifications của user ──────────────────────────────
   @Get()
-  async getNotifications(
-    @Query('userId') userId: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List notifications (default 5, newest first)',
+  })
+  async getNotifications(@Request() req, @Query() query: NotificationQueryDto) {
+    return this.notificationService.getNotifications(req.user.id, {
+      page: query.page,
+      size: query.size,
+    });
+  }
+
+  @Get('unread')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List unread notifications only (default 5, newest first)',
+  })
+  async getUnreadNotifications(
+    @Request() req,
+    @Query() query: NotificationQueryDto,
   ) {
-    const p = page ? Number(page) : 1;
-    const l = limit ? Number(limit) : 5;
-    return this.notificationService.getNotifications(userId, p, l);
+    return this.notificationService.getNotifications(req.user.id, {
+      page: query.page,
+      size: query.size,
+      unreadOnly: true,
+    });
   }
 
-  // ─── Số thông báo chưa đọc ─────────────────────────────────────────────
   @Get('unread-count')
-  async countUnread(@Query('userId') userId: string) {
-    const count = await this.notificationService.countUnread(userId);
-    return { userId, unreadCount: count };
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Count remaining unread notifications' })
+  async countUnread(@Request() req) {
+    const count = await this.notificationService.countUnread(req.user.id);
+    return { unreadCount: count };
   }
 
-  // ─── Đánh dấu 1 notification đã đọc ───────────────────────────────────
-  @Patch(':id/read')
-  async markAsRead(@Param('id') id: string) {
-    return this.notificationService.markAsRead(id);
-  }
-
-  // ─── Đánh dấu TẤT CẢ đã đọc (BE xử lý) ───────────────────────────────
   @Patch('mark-all-read')
-  async markAllAsRead(@Query('userId') userId: string) {
-    await this.notificationService.markAllAsRead(userId);
-    return { success: true, message: `All notifications marked as read for user ${userId}` };
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async markAllAsRead(@Request() req) {
+    await this.notificationService.markAllAsRead(req.user.id);
+    return { success: true, message: 'All notifications marked as read' };
   }
 
-  // ─── Debug: xem khoảng ngày thực tế trong DB ───────────────────────────
+  @Patch(':id/read')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async markAsRead(@Param('id') id: string) {
+    await this.notificationService.markAsRead(id);
+    return { success: true };
+  }
+
   @Get('debug/date-range')
   async debugDateRange() {
     const result = await this.paperRepository
@@ -75,7 +109,7 @@ export class NotificationController {
       .getRawOne();
 
     return {
-      message: 'Dùng khoảng ngày này để test trigger',
+      message: 'Use this date range to test trigger',
       ...result,
       exampleTrigger: {
         startTime: result.minDate,

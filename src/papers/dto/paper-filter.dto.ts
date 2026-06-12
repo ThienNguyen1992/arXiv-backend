@@ -25,7 +25,7 @@ export class PaperFilterDto extends PaginationQueryDto {
   topics?: string[];
 
   @ApiPropertyOptional({
-    description: 'Search in both title and author',
+    description: 'Search in abstract only (alias: use abstract param)',
     example: 'deep learning',
   })
   @IsOptional()
@@ -47,6 +47,14 @@ export class PaperFilterDto extends PaginationQueryDto {
   @IsOptional()
   @IsString()
   author?: string;
+
+  @ApiPropertyOptional({
+    description: 'Search only in abstract',
+    example: 'transformer architecture',
+  })
+  @IsOptional()
+  @IsString()
+  abstract?: string;
 
   @ApiPropertyOptional({
     description: 'Sort by field (date or score). Default is date.',

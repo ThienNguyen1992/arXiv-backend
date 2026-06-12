@@ -9,6 +9,9 @@ import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { getPagination, toPaginatedResponse } from '../common/pagination';
 import { PapersService } from '../papers/papers.service';
 import { Topic } from '../topics/entities/topic.entity';
+import { CategoriesService } from '../categories/categories.service';
+import { UserTopicsQueryDto } from './dto/user-topics-query.dto';
+import { resolveArxivTopicCode } from '../common/utils/arxiv-taxonomy.util';
 import { UserPaperHistory } from './entities/user-paper-history.entity';
 import { UserFavorite } from './entities/user-favorite.entity';
 
@@ -19,6 +22,7 @@ export class UsersService {
     private readonly usersRepository: Repository<User>,
     @InjectRepository(Topic)
     private readonly topicsRepository: Repository<Topic>,
+    private readonly categoriesService: CategoriesService,
     @InjectRepository(UserPaperHistory)
     private readonly historyRepository: Repository<UserPaperHistory>,
     @InjectRepository(UserFavorite)
@@ -78,10 +82,15 @@ export class UsersService {
     await this.usersRepository.remove(user);
   }
 
-  async getTopics(userId: string, query: PaginationQueryDto) {
+  async getTopics(userId: string, query: UserTopicsQueryDto = new UserTopicsQueryDto()) {
     const user = await this.findOne(userId);
-    const { page, size, skip, take } = getPagination(query);
     const topics = [...(user.topics ?? [])].sort((first, second) => first.code.localeCompare(second.code));
+
+    if (query.all) {
+      return toPaginatedResponse(topics, topics.length, 1, topics.length || 1);
+    }
+
+    const { page, size, skip, take } = getPagination(query);
     const data = topics.slice(skip, skip + take);
 
     return toPaginatedResponse(data, topics.length, page, size);
@@ -89,13 +98,19 @@ export class UsersService {
 
   async setTopics(userId: string, topicCodes: string[]) {
     const user = await this.findOne(userId);
-    const topics = await this.findTopicsByCodesOrFail(topicCodes);
+    const normalizedCodes = this.normalizeTopicCodes(topicCodes);
+
+    if (normalizedCodes.length > 0) {
+      await this.categoriesService.ensureTopicsForCodes(normalizedCodes);
+    }
+
+    const topics = await this.findTopicsByCodesOrFail(normalizedCodes);
 
     user.topics = topics;
     user.isFirstLogged = false;
     await this.usersRepository.save(user);
 
-    return topics;
+    return this.getTopics(userId, Object.assign(new UserTopicsQueryDto(), { all: true }));
   }
 
   async addTopic(userId: string, topicId: number) {
@@ -115,7 +130,7 @@ export class UsersService {
       await this.usersRepository.save(user);
     }
 
-    return this.getTopics(userId, new PaginationQueryDto());
+    return this.getTopics(userId, Object.assign(new UserTopicsQueryDto(), { all: true }));
   }
 
   async removeTopic(userId: string, topicId: number) {
@@ -123,7 +138,7 @@ export class UsersService {
     user.topics = (user.topics ?? []).filter((topic) => topic.id !== topicId);
     await this.usersRepository.save(user);
 
-    return this.getTopics(userId, new PaginationQueryDto());
+    return this.getTopics(userId, Object.assign(new UserTopicsQueryDto(), { all: true }));
   }
 
   // --- Favorite Papers (stored as arxiv_id, data fetched from Elasticsearch) ---
@@ -236,18 +251,30 @@ export class UsersService {
     return topics;
   }
 
+  private normalizeTopicCodes(topicCodes: string[]): string[] {
+    return [
+      ...new Set(
+        topicCodes
+          .map((code) => resolveArxivTopicCode(code.trim()).code)
+          .filter(Boolean),
+      ),
+    ];
+  }
+
   private async findTopicsByCodesOrFail(topicCodes: string[]): Promise<Topic[]> {
     if (topicCodes.length === 0) {
       return [];
     }
 
-    const topics = await this.topicsRepository.find({
-      where: { code: In(topicCodes) },
-      relations: ['category'],
-    });
+    const lowerCodes = topicCodes.map((code) => code.toLowerCase());
+    const topics = await this.topicsRepository
+      .createQueryBuilder('topic')
+      .leftJoinAndSelect('topic.category', 'category')
+      .where('LOWER(topic.code) IN (:...lowerCodes)', { lowerCodes })
+      .getMany();
 
-    const foundCodes = new Set(topics.map((topic) => topic.code));
-    const missingCodes = topicCodes.filter((code) => !foundCodes.has(code));
+    const foundCodes = new Set(topics.map((topic) => topic.code.toLowerCase()));
+    const missingCodes = topicCodes.filter((code) => !foundCodes.has(code.toLowerCase()));
 
     if (missingCodes.length > 0) {
       throw new NotFoundException(`Topics not found: ${missingCodes.join(', ')}`);
