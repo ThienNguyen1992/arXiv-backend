@@ -61,11 +61,12 @@ export class SchedulerService implements OnModuleInit {
 
   async runManual(query: ArxivTimeQueryDto) {
     const ingestLimit = Number(this.configService.get<string>('CRON_INGEST_PAPER_LIMIT', '1'));
-    const safeLimit = Number.isFinite(ingestLimit) && ingestLimit > 0 ? ingestLimit : 1;
+    const safeLimit = 10
+    Number.isFinite(ingestLimit) && ingestLimit > 0 ? ingestLimit : 1;
     const reingestCopyEnv = this.configService.get<string>('CRON_REINGEST_AS_DUPLICATE_COPY');
     const reingestAsCopy =
       reingestCopyEnv === 'true' ||
-      (reingestCopyEnv !== 'false' && safeLimit === 1);
+      (reingestCopyEnv !== 'false' && safeLimit === 10);
 
     this.logger.log(
       `Fetching papers from ${query.startDate} to ${query.endDate} (ingest limit=${safeLimit}, reingestAsCopy=${reingestAsCopy})`,

@@ -71,6 +71,12 @@ export class UsersService {
     return user;
   }
 
+  async getMe(userId: string) {
+    const user = await this.findOne(userId);
+    delete (user as Partial<User>).password;
+    return user;
+  }
+
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
     const user = await this.findOne(id);
     this.usersRepository.merge(user, updateUserDto);
@@ -160,16 +166,18 @@ export class UsersService {
   }
 
   async addFavorite(userId: string, arxivId: string) {
-    // Ensure user exists
+    const normalizedArxivId = this.normalizeArxivId(arxivId);
     await this.findOne(userId);
 
-    // Upsert: ignore duplicate (unique constraint on user_id + arxiv_id)
     const existing = await this.favoriteRepository.findOne({
-      where: { user_id: userId, arxiv_id: arxivId },
+      where: { user_id: userId, arxiv_id: normalizedArxivId },
     });
 
     if (!existing) {
-      const favorite = this.favoriteRepository.create({ user_id: userId, arxiv_id: arxivId });
+      const favorite = this.favoriteRepository.create({
+        user_id: userId,
+        arxiv_id: normalizedArxivId,
+      });
       await this.favoriteRepository.save(favorite);
     }
 
@@ -177,10 +185,11 @@ export class UsersService {
   }
 
   async removeFavorite(userId: string, arxivId: string) {
+    const normalizedArxivId = this.normalizeArxivId(arxivId);
     await this.findOne(userId);
 
     const favorite = await this.favoriteRepository.findOne({
-      where: { user_id: userId, arxiv_id: arxivId },
+      where: { user_id: userId, arxiv_id: normalizedArxivId },
     });
 
     if (favorite) {
@@ -195,7 +204,6 @@ export class UsersService {
   async getHistory(userId: string, query: PaginationQueryDto) {
     const { page, size, skip, take } = getPagination(query);
 
-    // 1. Fetch paginated history from Postgres to preserve exact viewed_at order
     const [history, total] = await this.historyRepository.findAndCount({
       where: { user_id: userId },
       order: { viewed_at: 'DESC' },
@@ -203,32 +211,50 @@ export class UsersService {
       take,
     });
 
-    const arxivIds = history.map(h => h.arxiv_id);
-    const data = await this.papersService.getElasticsearchPapersByArxivIds(arxivIds);
+    const arxivIds = history.map((entry) => entry.arxiv_id);
+    const papers = await this.papersService.getElasticsearchPapersByArxivIds(arxivIds);
+    const paperMap = new Map(papers.map((paper) => [paper.arxiv_id, paper]));
+
+    const data = history.map((entry) => {
+      const paper = paperMap.get(entry.arxiv_id);
+      if (paper) {
+        return { ...paper, viewed_at: entry.viewed_at };
+      }
+
+      return {
+        arxiv_id: entry.arxiv_id,
+        viewed_at: entry.viewed_at,
+      };
+    });
 
     return toPaginatedResponse(data, total, page, size);
   }
 
   async addHistory(userId: string, arxivId: string) {
+    const normalizedArxivId = this.normalizeArxivId(arxivId);
     await this.findOne(userId);
 
     let historyEntry = await this.historyRepository.findOne({
-      where: { user_id: userId, arxiv_id: arxivId },
+      where: { user_id: userId, arxiv_id: normalizedArxivId },
     });
 
     if (historyEntry) {
-      // Update timestamp to mark as re-visited
       historyEntry.viewed_at = new Date();
     } else {
       historyEntry = this.historyRepository.create({
         user_id: userId,
-        arxiv_id: arxivId,
+        arxiv_id: normalizedArxivId,
+        viewed_at: new Date(),
       });
     }
 
     await this.historyRepository.save(historyEntry);
 
     return this.getHistory(userId, new PaginationQueryDto());
+  }
+
+  private normalizeArxivId(value: string): string {
+    return value.trim().replace(/v\d+$/i, '');
   }
 
   private async findTopicsOrFail(topicIds: number[]): Promise<Topic[]> {

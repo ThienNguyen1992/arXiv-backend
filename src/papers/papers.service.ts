@@ -2,7 +2,6 @@ import { Logger, BadRequestException, Injectable, InternalServerErrorException, 
 import { InjectRepository } from '@nestjs/typeorm';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
 import { In, Repository } from 'typeorm';
-import { CreatePaperDto } from './dto/create-paper.dto';
 import { UpdatePaperDto } from './dto/update-paper.dto';
 import { CreatePaperVersionDto } from './dto/create-paper-version.dto';
 import { AddPaperTopicDto } from './dto/add-paper-topic.dto';
@@ -59,51 +58,6 @@ export class PapersService {
     private readonly elasticsearchService: ElasticsearchService,
     private readonly paperDuplicatesService: PaperDuplicatesService,
   ) {}
-
-  create(createPaperDto: CreatePaperDto) {
-    const paper = this.papersRepository.create(createPaperDto);
-    return this.papersRepository.save(paper);
-  }
-
-  async findAll(query: PaperFilterDto) {
-    const { page, size, skip, take } = getPagination(query);
-
-    const qb = this.papersRepository.createQueryBuilder('paper')
-      .leftJoinAndSelect('paper.paperTopics', 'paperTopics')
-      .leftJoinAndSelect('paperTopics.topic', 'topic')
-      .leftJoinAndSelect('topic.category', 'category');
-
-    if (query.topics && query.topics.length > 0) {
-      qb.innerJoin('paper.paperTopics', 'pt_filter')
-        .innerJoin('pt_filter.topic', 't_filter')
-        .andWhere('t_filter.code IN (:...topicCodes)', { topicCodes: query.topics });
-    }
-
-    const titleTerm = query.title?.trim();
-    const authorTerm = query.author?.trim();
-    const abstractTerm = query.abstract?.trim() || query.q?.trim();
-
-    if (titleTerm) {
-      qb.andWhere('paper.title ILIKE :title', { title: `%${titleTerm}%` });
-    }
-
-    if (authorTerm) {
-      qb.andWhere('paper.authors ILIKE :author', { author: `%${authorTerm}%` });
-    }
-
-    if (abstractTerm) {
-      qb.andWhere('paper.abstract ILIKE :abstract', { abstract: `%${abstractTerm}%` });
-    }
-
-    qb.orderBy('paper.published_at', 'DESC')
-      .addOrderBy('paper.created_at', 'DESC')
-      .skip(skip)
-      .take(take);
-
-    const [data, total] = await qb.getManyAndCount();
-
-    return toPaginatedResponse(data, total, page, size);
-  }
 
   async getYouMightLike(userId: string, query: YouMightLikeQueryDto) {
     const paperTopics = this.normalizeTopicCodes(query.paperTopics);

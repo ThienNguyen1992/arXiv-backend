@@ -1,6 +1,5 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, Request, Req } from '@nestjs/common';
 import { PapersService } from './papers.service';
-import { CreatePaperDto } from './dto/create-paper.dto';
 import { UpdatePaperDto } from './dto/update-paper.dto';
 import { CreatePaperVersionDto } from './dto/create-paper-version.dto';
 import { AddPaperTopicDto } from './dto/add-paper-topic.dto';
@@ -18,26 +17,6 @@ import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 @Controller('papers')
 export class PapersController {
   constructor(private readonly papersService: PapersService) {}
-
-  @Post()
-  @ApiOperation({ summary: 'Create a new paper' })
-  @ApiResponse({ status: 201, description: 'Paper created successfully.' })
-  create(@Body() createPaperDto: CreatePaperDto) {
-    return this.papersService.create(createPaperDto);
-  }
-
-  @Get()
-  @ApiOperation({ summary: 'Get papers from DB. Supports pagination, topic filter, and text search.' })
-  @ApiQuery({ name: 'page', required: false, example: 1 })
-  @ApiQuery({ name: 'size', required: false, example: 20 })
-  @ApiQuery({ name: 'topics', required: false, isArray: true, example: ['cs.AI', 'cs.LG'], description: 'Filter by topic codes' })
-  @ApiQuery({ name: 'q', required: false, example: 'deep learning', description: 'Search in abstract (alias of abstract)' })
-  @ApiQuery({ name: 'title', required: false, example: 'neural networks', description: 'Search only in title' })
-  @ApiQuery({ name: 'author', required: false, example: 'Andrew Ng', description: 'Search only in author' })
-  @ApiQuery({ name: 'abstract', required: false, example: 'transformer', description: 'Search only in abstract' })
-  findAll(@Query() query: PaperFilterDto) {
-    return this.papersService.findAll(query);
-  }
 
   @Get('es/search')
   @UseGuards(OptionalJwtAuthGuard)

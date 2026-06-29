@@ -47,30 +47,67 @@ describe('CategoriesService', () => {
     expect(categories).toEqual([
       {
         code: 'cs',
-        name: 'Computer Science',
-        description: 'arXiv Computer Science category group',
+        title: 'Computer Science',
         topics: [
           {
             code: 'cs.AI',
-            name: 'Artificial Intelligence',
+            title: 'Artificial Intelligence',
             description: 'Covers all areas of AI.',
           },
           {
             code: 'cs.LG',
-            name: 'Machine Learning',
+            title: 'Machine Learning',
             description: 'Papers on all aspects of machine learning.',
           },
         ],
       },
       {
         code: 'math',
-        name: 'Mathematics',
-        description: 'arXiv Mathematics category group',
+        title: 'Mathematics',
         topics: [
           {
             code: 'math.AP',
-            name: 'Analysis of PDEs',
+            title: 'Analysis of PDEs',
             description: 'Existence and uniqueness.',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('parses physics archive headings into separate categories', () => {
+    const html = `
+      <h2>Physics</h2>
+      <h3>Astrophysics(astro-ph)</h3>
+      <h4>astro-ph.CO (Cosmology and Nongalactic Astrophysics)</h4>
+      <p>Cosmology papers.</p>
+      <h3>Condensed Matter(cond-mat)</h3>
+      <h4>cond-mat.soft (Soft Condensed Matter)</h4>
+      <p>Soft matter papers.</p>
+    `;
+
+    const categories = service.parseArxivTaxonomy(html);
+
+    expect(categories).toEqual([
+      {
+        code: 'astro-ph',
+        title: 'Astrophysics',
+        topics: [
+          {
+            code: 'astro-ph.CO',
+            title: 'Cosmology and Nongalactic Astrophysics',
+            description: 'Cosmology papers.',
+          },
+        ],
+      },
+      {
+        code: 'cond-mat',
+        title: 'Condensed Matter',
+        topics: [
+          {
+            code: 'cond-mat.soft',
+            title: 'Soft Condensed Matter',
+            description: 'Soft matter papers.',
           },
         ],
       },

@@ -32,18 +32,6 @@ export class User {
   @UpdateDateColumn()
   updated_at: Date;
 
-  @ApiPropertyOptional({ description: 'Token used for resetting password' })
-  @Column({ type: 'varchar', nullable: true })
-  reset_password_token: string | null;
-
-  @ApiPropertyOptional({ description: 'Expiration date of the reset password token' })
-  @Column({ type: 'timestamp', nullable: true })
-  reset_password_expires: Date | null;
-
-  @ApiPropertyOptional({ description: 'Hashed refresh token for session management' })
-  @Column({ type: 'varchar', nullable: true })
-  hashed_refresh_token: string | null;
-
   @ManyToMany(() => Topic)
   @JoinTable({
     name: 'users_topics',

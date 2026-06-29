@@ -37,24 +37,8 @@ export class DatabaseSchemaService implements OnModuleInit {
       await this.dataSource.query('ALTER TABLE topics RENAME COLUMN name TO title;');
     }
 
-    // Ensure users_favorite_papers table exists
-    await this.dataSource.query(`
-      CREATE TABLE IF NOT EXISTS users_favorite_papers (
-        user_id UUID NOT NULL,
-        paper_id UUID NOT NULL,
-        PRIMARY KEY (user_id, paper_id),
-        CONSTRAINT fk_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-        CONSTRAINT fk_paper FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE CASCADE
-      );
-      CREATE TABLE IF NOT EXISTS user_paper_history (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL,
-        paper_id UUID NOT NULL,
-        viewed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT fk_history_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-        CONSTRAINT fk_history_paper FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE CASCADE
-      );
-    `);
+    // Ensure favorites/history tables use arxiv_id (not legacy paper_id schema)
+    await this.ensureUserPaperReferenceTables();
 
     await this.dataSource.query(`
       CREATE TABLE IF NOT EXISTS paper_similarities (
@@ -134,5 +118,101 @@ export class DatabaseSchemaService implements OnModuleInit {
     }
 
     this.logger.log('Article search trigger and PostgreSQL indexes are processed');
+  }
+
+  private async ensureUserPaperReferenceTables() {
+    await this.dataSource.query(`
+      CREATE TABLE IF NOT EXISTS user_favorites (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL,
+        arxiv_id VARCHAR NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_user_favorites_user_arxiv UNIQUE (user_id, arxiv_id),
+        CONSTRAINT fk_user_favorites_user FOREIGN KEY (user_id)
+          REFERENCES users(id) ON DELETE CASCADE
+      );
+    `);
+
+    const historyTable = await this.dataSource.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'user_paper_history';
+    `);
+
+    if (historyTable.length === 0) {
+      await this.dataSource.query(`
+        CREATE TABLE user_paper_history (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL,
+          arxiv_id VARCHAR NOT NULL,
+          viewed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT uq_user_paper_history_user_arxiv UNIQUE (user_id, arxiv_id),
+          CONSTRAINT fk_user_paper_history_user FOREIGN KEY (user_id)
+            REFERENCES users(id) ON DELETE CASCADE
+        );
+      `);
+      this.logger.log('Created user_paper_history table with arxiv_id.');
+      return;
+    }
+
+    const paperIdColumn = await this.dataSource.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = 'user_paper_history' AND column_name = 'paper_id';
+    `);
+
+    if (paperIdColumn.length > 0) {
+      this.logger.log('Migrating user_paper_history: dropping legacy paper_id column');
+      await this.dataSource.query(`DELETE FROM user_paper_history`);
+      const fkConstraints = await this.dataSource.query(`
+        SELECT tc.constraint_name
+        FROM information_schema.table_constraints AS tc
+        JOIN information_schema.key_column_usage AS kcu
+          ON tc.constraint_name = kcu.constraint_name
+        WHERE tc.table_name = 'user_paper_history'
+          AND tc.constraint_type = 'FOREIGN KEY'
+          AND kcu.column_name = 'paper_id';
+      `);
+      for (const row of fkConstraints) {
+        await this.dataSource.query(
+          `ALTER TABLE user_paper_history DROP CONSTRAINT "${row.constraint_name}"`,
+        );
+      }
+      await this.dataSource.query(`ALTER TABLE user_paper_history DROP COLUMN paper_id`);
+    }
+
+    const arxivIdColumn = await this.dataSource.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = 'user_paper_history' AND column_name = 'arxiv_id';
+    `);
+
+    if (arxivIdColumn.length === 0) {
+      this.logger.log('Migrating user_paper_history: adding arxiv_id column');
+      await this.dataSource.query(`
+        ALTER TABLE user_paper_history
+        ADD COLUMN arxiv_id VARCHAR NOT NULL DEFAULT '';
+      `);
+      await this.dataSource.query(`
+        ALTER TABLE user_paper_history ALTER COLUMN arxiv_id DROP DEFAULT;
+      `);
+    }
+
+    await this.dataSource.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE table_name = 'user_paper_history'
+            AND constraint_name = 'uq_user_paper_history_user_arxiv'
+        ) THEN
+          ALTER TABLE user_paper_history
+            ADD CONSTRAINT uq_user_paper_history_user_arxiv UNIQUE (user_id, arxiv_id);
+        END IF;
+      END$$;
+    `);
+
+    await this.dataSource.query(`DROP TABLE IF EXISTS users_favorite_papers CASCADE`);
+    this.logger.log('Ensured user_favorites and user_paper_history tables use arxiv_id.');
   }
 }
