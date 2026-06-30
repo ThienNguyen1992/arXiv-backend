@@ -6,7 +6,7 @@ import {
   DuplicateCandidate,
   PaperDuplicateDetector,
 } from '../common/utils/duplicate-detector.util';
-import { PaperScorer } from '../common/utils/paper-score.util';
+import { PaperScorer, buildPaperScoringInput } from '../common/utils/paper-score.util';
 import { PaperSimilarity } from './entities/paper-similarity.entity';
 
 export interface CronArxivPaperInput {
@@ -161,13 +161,16 @@ export class PaperDuplicatesService {
     const publishedDate = paper.publishedDate ? new Date(paper.publishedDate) : new Date();
     const updatedDate = paper.updatedDate ? new Date(paper.updatedDate) : publishedDate;
     const scorer = new PaperScorer();
-    const scoreResult = scorer.calculateScore({
-      published_date: publishedDate,
-      updated_date: updatedDate,
-      abstract: paper.summary,
-      version: 1,
-      authors: [],
-    });
+    const scoreResult = scorer.calculateScore(
+      buildPaperScoringInput({
+        published_date: publishedDate,
+        updated_date: updatedDate,
+        abstract: paper.summary,
+        categories: paper.allCategories,
+        authors: paper.authors,
+        version: 1,
+      }),
+    );
 
     const document = this.buildElasticsearchDocument({
       storageId: arxivId,
@@ -185,7 +188,7 @@ export class PaperDuplicatesService {
       document,
     });
 
-    const source = this.toDuplicateCandidate({
+    const duplicateLinked = await this.detectAndLinkDuplicatesForPaper({
       arxiv_id: arxivId,
       title: paper.title,
       abstract: paper.summary,
@@ -193,26 +196,17 @@ export class PaperDuplicatesService {
       published_at: publishedDate,
     });
 
-    const candidates = await this.findDuplicateCandidates(source, arxivId);
-    const bestMatch = this.detector
-      .detectDuplicates(source, candidates)
-      .find((match) => match.type === 'exact' || match.type === 'near');
-
     let isDuplicate = false;
     let canonicalArxivId: string | null = arxivId;
-    let duplicateLinked = false;
 
-    if (bestMatch) {
-      duplicateLinked = await this.linkDuplicatePair(
-        source,
-        bestMatch.paper,
-        bestMatch.similarity,
-        bestMatch.type,
-      );
-
-      if (duplicateLinked) {
-        canonicalArxivId = this.pickCanonicalArxivId(source, bestMatch.paper);
-        isDuplicate = canonicalArxivId !== arxivId;
+    if (duplicateLinked) {
+      const doc = await this.getElasticsearchDocById(arxivId);
+      const duplicateOf = doc?.duplicate_of_arxiv_id
+        ? this.normalizeArxivId(String(doc.duplicate_of_arxiv_id))
+        : null;
+      if (duplicateOf) {
+        canonicalArxivId = duplicateOf;
+        isDuplicate = true;
       }
     }
 
@@ -234,13 +228,16 @@ export class PaperDuplicatesService {
     const publishedDate = paper.publishedDate ? new Date(paper.publishedDate) : new Date();
     const updatedDate = paper.updatedDate ? new Date(paper.updatedDate) : publishedDate;
     const scorer = new PaperScorer();
-    const scoreResult = scorer.calculateScore({
-      published_date: publishedDate,
-      updated_date: updatedDate,
-      abstract: paper.summary,
-      version: 1,
-      authors: [],
-    });
+    const scoreResult = scorer.calculateScore(
+      buildPaperScoringInput({
+        published_date: publishedDate,
+        updated_date: updatedDate,
+        abstract: paper.summary,
+        categories: paper.allCategories,
+        authors: paper.authors,
+        version: 1,
+      }),
+    );
 
     const document = this.buildElasticsearchDocument({
       storageId: copyArxivId,
@@ -364,34 +361,44 @@ export class PaperDuplicatesService {
   }
 
   async processBatchDuplicates(batch: DuplicatePaperInput[]) {
-    if (batch.length < 2) {
+    if (batch.length === 0) {
       return { linkedPairs: 0 };
     }
 
-    const candidates = batch.map((item) => this.toDuplicateCandidate(item));
     let linkedPairs = 0;
-
-    for (let i = 0; i < candidates.length; i++) {
-      const source = candidates[i];
-      const others = candidates.slice(i + 1);
-      const matches = this.detector
-        .detectDuplicates(source, others)
-        .filter((match) => match.type === 'exact' || match.type === 'near');
-
-      for (const match of matches) {
-        const linked = await this.linkDuplicatePair(
-          source,
-          match.paper,
-          match.similarity,
-          match.type,
-        );
-        if (linked) {
-          linkedPairs += 1;
-        }
+    for (const item of batch) {
+      const linked = await this.detectAndLinkDuplicatesForPaper(item);
+      if (linked) {
+        linkedPairs += 1;
       }
     }
 
     return { linkedPairs };
+  }
+
+
+  async detectAndLinkDuplicatesForPaper(input: DuplicatePaperInput): Promise<boolean> {
+    const source = this.toDuplicateCandidate(input);
+    const arxivId = source.arxiv_id;
+    if (!arxivId) {
+      return false;
+    }
+
+    const candidates = await this.findDuplicateCandidates(source, arxivId);
+    const bestMatch = this.detector
+      .detectDuplicates(source, candidates)
+      .find((match) => match.type === 'exact' || match.type === 'near');
+
+    if (!bestMatch) {
+      return false;
+    }
+
+    return this.linkDuplicatePair(
+      source,
+      bestMatch.paper,
+      bestMatch.similarity,
+      bestMatch.type,
+    );
   }
 
   private async linkDuplicatePair(
@@ -501,7 +508,10 @@ export class PaperDuplicatesService {
                 },
               },
             ],
-            must_not: [{ ids: { values: [excludeArxivId] } }],
+            must_not: [
+              { ids: { values: [excludeArxivId] } },
+              { exists: { field: 'duplicate_of_arxiv_id' } },
+            ],
           },
         },
       });

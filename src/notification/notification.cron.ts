@@ -8,7 +8,6 @@ export class NotificationCron {
 
   constructor(private notificationService: NotificationService) {}
 
-  // Chạy mỗi ngày lúc 6h sáng
   @Cron('0 6 * * *', {
     timeZone: 'Asia/Ho_Chi_Minh',
   })

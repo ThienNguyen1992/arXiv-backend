@@ -60,9 +60,15 @@ export function resolveArxivTopicCode(code: string): ArxivTopicInfo {
   };
 }
 
-export function collectArxivTopicCodesFromCategoriesField(categories?: string): string[] {
+export function collectArxivTopicCodesFromCategoriesField(
+  categories?: string | string[],
+): string[] {
   if (!categories) {
     return [];
+  }
+
+  if (Array.isArray(categories)) {
+    return [...new Set(categories.map((code) => code.trim()).filter(Boolean))];
   }
 
   return [...new Set(categories.split(/\s+/).map((code) => code.trim()).filter(Boolean))];

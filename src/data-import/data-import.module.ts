@@ -19,5 +19,6 @@ import { PapersModule } from '../papers/papers.module';
   ],
   controllers: [DataImportController],
   providers: [DataImportService],
+  exports: [DataImportService],
 })
 export class DataImportModule {}

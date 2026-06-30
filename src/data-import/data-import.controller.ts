@@ -12,10 +12,10 @@ export class DataImportController {
   @Post('elasticsearch/local')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
-    summary: 'Import papers from a local JSONL file into Elasticsearch (runs in background)',
+    summary: 'Import papers from a local JSON file into Elasticsearch (runs in background)',
     description:
-      'Each line must be one JSON object (arXiv metadata format). Documents are indexed by arxiv_id; ' +
-      're-importing the same id overwrites the existing document.',
+      'Supports JSON array ([{...}, {...}]) or JSONL (one JSON object per line, arXiv metadata format). ' +
+      'Documents are indexed by arxiv_id; re-importing the same id overwrites the existing document.',
   })
   @ApiBody({ type: ImportLocalDataDto })
   @ApiResponse({

@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as readline from 'readline';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
 import { AiService } from '../ai/ai.service';
@@ -13,7 +14,7 @@ import { CategoriesService } from '../categories/categories.service';
 import { PaperDuplicatesService } from '../papers/paper-duplicates.service';
 import { verifyLocalJsonFile } from '../common/utils/file.util';
 import { collectArxivTopicCodesFromCategoriesField } from '../common/utils/arxiv-taxonomy.util';
-import { PaperScorer, PaperScoringInput } from '../common/utils/paper-score.util';
+import { PaperScorer, buildPaperScoringInput } from '../common/utils/paper-score.util';
 import { DEFAULT_PAPERS_PER_TOPIC, SummarizeBackfillDto } from './dto/summarize-backfill.dto';
 
 interface ElasticsearchSummaryItem {
@@ -53,6 +54,25 @@ export class DataImportService {
 
   private async processElasticsearchFileBackground(filePath: string) {
     this.logger.log(`Starting Elasticsearch import from ${filePath}`);
+    const content = (await fsPromises.readFile(filePath, 'utf-8')).trim();
+
+    if (content.startsWith('[')) {
+      let records: unknown;
+      try {
+        records = JSON.parse(content);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'unknown error';
+        throw new Error(`Invalid JSON array file: ${message}`);
+      }
+
+      if (!Array.isArray(records)) {
+        throw new Error('JSON file must be an array of paper objects when it starts with [');
+      }
+
+      await this.processElasticsearchRecords(records);
+      return;
+    }
+
     const fileStream = fs.createReadStream(filePath);
     const rl = readline.createInterface({
       input: fileStream,
@@ -60,6 +80,34 @@ export class DataImportService {
     });
 
     await this.processElasticsearchStream(rl);
+  }
+
+  private async processElasticsearchRecords(records: any[]) {
+    const BATCH_SIZE = 500;
+    let batch: any[] = [];
+    let count = 0;
+
+    for (const data of records) {
+      if (!data || typeof data !== 'object') {
+        this.logger.warn('ES: Skipping invalid record (not a JSON object)');
+        continue;
+      }
+
+      batch.push(data);
+      count++;
+
+      if (batch.length >= BATCH_SIZE) {
+        await this.processElasticsearchBatch(batch);
+        this.logger.log(`ES: Processed ${count} records...`);
+        batch = [];
+      }
+    }
+
+    if (batch.length > 0) {
+      await this.processElasticsearchBatch(batch);
+    }
+
+    this.logger.log(`ES: Processed ${count} records. Import complete.`);
   }
 
   private async processElasticsearchStream(rl: readline.Interface) {
@@ -132,15 +180,19 @@ export class DataImportService {
         const updatedDate = item.update_date ? new Date(item.update_date) : publishedDate;
         const categories = collectArxivTopicCodesFromCategoriesField(item.categories);
 
-        const scoreInput: PaperScoringInput = {
+        const scoreInput = buildPaperScoringInput({
           published_date: publishedDate,
           updated_date: updatedDate,
           journal_ref: item['journal-ref'],
+          doi: item.doi,
           abstract: item.abstract,
           comments: item.comments,
+          categories: item.categories,
           version: item.versions ? item.versions.length : 1,
-          authors: [],
-        };
+          authors: item.authors,
+          authors_parsed: item.authors_parsed,
+          license: item.license,
+        });
         const scoreResult = scorer.calculateScore(scoreInput);
 
         return [
@@ -209,19 +261,17 @@ export class DataImportService {
         this.logger.error(`Some ES documents failed: ${JSON.stringify(erroredDocuments)}`);
       }
 
-      if (this.aiService.shouldSummarizeOnImport()) {
-        const summaryItems = batch
-          .map((item) => ({
-            arxiv_id: this.normalizeArxivId(String(item.id ?? item.arxiv_id ?? '')),
-            title: item.title
-              ? item.title.replace(/\s+/g, ' ').trim().substring(0, 500)
-              : 'Untitled',
-            abstract: item.abstract ? item.abstract.replace(/\s+/g, ' ').trim() : '',
-          }))
-          .filter((item) => item.arxiv_id);
+      const summaryItems = batch
+        .map((item) => ({
+          arxiv_id: this.normalizeArxivId(String(item.id ?? item.arxiv_id ?? '')),
+          title: item.title
+            ? item.title.replace(/\s+/g, ' ').trim().substring(0, 500)
+            : 'Untitled',
+          abstract: item.abstract ? item.abstract.replace(/\s+/g, ' ').trim() : '',
+        }))
+        .filter((item) => item.arxiv_id);
 
-        await this.summarizeAndUpdateElasticsearch(summaryItems);
-      }
+      await this.summarizeOnImportIfEnabled(summaryItems);
     } catch (err) {
       this.logger.error(`ES Batch process failed: ${err.message}`, err.stack);
     }
@@ -274,7 +324,7 @@ export class DataImportService {
       throw new NotFoundException(`Paper ${arxivId} not found in Elasticsearch`);
     }
 
-    const updated = await this.summarizeAndUpdateElasticsearch(
+    const updated = await this.summarizeElasticsearchPapers(
       [
         {
           arxiv_id: source.arxiv_id ?? normalizedId,
@@ -409,7 +459,7 @@ export class DataImportService {
       }
 
       const batchStartedAt = Date.now();
-      const updated = await this.summarizeAndUpdateElasticsearch(uniquePapers, concurrency);
+      const updated = await this.summarizeElasticsearchPapers(uniquePapers, concurrency);
       processed += uniquePapers.length;
       summarized += updated;
       const batchSeconds = ((Date.now() - batchStartedAt) / 1000).toFixed(1);
@@ -426,7 +476,19 @@ export class DataImportService {
     );
   }
 
-  private async summarizeAndUpdateElasticsearch(
+  async summarizeOnImportIfEnabled(
+    items: ElasticsearchSummaryItem[],
+    concurrency = this.aiService.getSummarizeConcurrency(),
+  ): Promise<number> {
+    if (!this.aiService.shouldSummarizeOnImport() || items.length === 0) {
+      return 0;
+    }
+
+    await this.aiService.warmupModel();
+    return this.summarizeElasticsearchPapers(items, concurrency);
+  }
+
+  async summarizeElasticsearchPapers(
     items: ElasticsearchSummaryItem[],
     concurrency = this.aiService.getSummarizeConcurrency(),
   ): Promise<number> {

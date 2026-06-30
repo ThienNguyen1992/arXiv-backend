@@ -9,6 +9,7 @@ import {
   IngestArxivPaperResult,
   PaperDuplicatesService,
 } from '../papers/paper-duplicates.service';
+import { DataImportService } from '../data-import/data-import.service';
 
 @Injectable()
 export class SchedulerService implements OnModuleInit {
@@ -18,6 +19,7 @@ export class SchedulerService implements OnModuleInit {
     private readonly papersService: PapersService,
     private readonly notificationService: NotificationService,
     private readonly paperDuplicatesService: PaperDuplicatesService,
+    private readonly dataImportService: DataImportService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -54,22 +56,17 @@ export class SchedulerService implements OnModuleInit {
     const query = new ArxivTimeQueryDto();
     query.startDate = targetDate;
     query.endDate = targetDate;
+   
 
-    // return this.runManual(query);
-    return 10
+    return this.runManual(query);
   }
 
   async runManual(query: ArxivTimeQueryDto) {
-    const ingestLimit = Number(this.configService.get<string>('CRON_INGEST_PAPER_LIMIT', '1'));
-    const safeLimit = 10
-    Number.isFinite(ingestLimit) && ingestLimit > 0 ? ingestLimit : 1;
-    const reingestCopyEnv = this.configService.get<string>('CRON_REINGEST_AS_DUPLICATE_COPY');
     const reingestAsCopy =
-      reingestCopyEnv === 'true' ||
-      (reingestCopyEnv !== 'false' && safeLimit === 10);
+      this.configService.get<string>('CRON_REINGEST_AS_DUPLICATE_COPY') === 'true';
 
     this.logger.log(
-      `Fetching papers from ${query.startDate} to ${query.endDate} (ingest limit=${safeLimit}, reingestAsCopy=${reingestAsCopy})`,
+      `Fetching papers from ${query.startDate} to ${query.endDate} (reingestAsCopy=${reingestAsCopy})`,
     );
 
     try {
@@ -77,11 +74,10 @@ export class SchedulerService implements OnModuleInit {
         query.startDate,
         query.endDate,
       );
-      const papersToIngest = response.data.slice(0, safeLimit);
-      console.log("🚀 ~ SchedulerService ~ runManual ~ papersToIngest:", papersToIngest)
+      let papersToIngest = response.data;
 
       this.logger.log(
-        `Fetched ${response.data.length}/${response.total} papers — processing first ${papersToIngest.length}`,
+        `Fetched ${response.data.length}/${response.total} papers — processing all ${papersToIngest.length}`,
       );
 
       if (papersToIngest.length === 0) {
@@ -92,7 +88,10 @@ export class SchedulerService implements OnModuleInit {
           message: 'No papers to ingest',
         };
       }
-
+      /// temporary csliceddd
+      if(papersToIngest && papersToIngest.length > 5) {
+         papersToIngest = papersToIngest.slice(0, 5);
+      }
       const ingestResults: IngestArxivPaperResult[] = [];
       for (const paper of papersToIngest) {
         const result = await this.paperDuplicatesService.ingestArxivPaper(
@@ -104,6 +103,28 @@ export class SchedulerService implements OnModuleInit {
         this.logger.log(
           `[INGEST] ${result.arxiv_id} | duplicate=${result.is_duplicate} | show_on_feed=${result.show_on_feed} | canonical=${result.canonical_arxiv_id ?? 'n/a'}`,
         );
+      }
+
+      const summaryItems = papersToIngest
+        .map((paper, index) => {
+          const ingest = ingestResults[index];
+          if (!ingest?.indexed) {
+            return null;
+          }
+
+          return {
+            arxiv_id: ingest.arxiv_id,
+            title: paper.title ? paper.title.replace(/\s+/g, ' ').trim().substring(0, 500) : 'Untitled',
+            abstract: paper.summary ? paper.summary.replace(/\s+/g, ' ').trim() : '',
+          };
+        })
+        .filter((item): item is { arxiv_id: string; title: string; abstract: string } => !!item);
+
+      let summarized = 0;
+      if (summaryItems.length > 0) {
+        this.logger.log(`Summarizing ${summaryItems.length} ingested paper(s) via Ollama...`);
+        summarized = await this.dataImportService.summarizeOnImportIfEnabled(summaryItems);
+        this.logger.log(`Summarized ${summarized}/${summaryItems.length} paper(s)`);
       }
 
       const papersForNotification = papersToIngest.filter(
@@ -122,6 +143,7 @@ export class SchedulerService implements OnModuleInit {
         fetched: response.data.length,
         arxivTotal: response.total,
         ingested: ingestResults.length,
+        summarized,
         duplicates: ingestResults.filter((item) => item.is_duplicate).length,
         notified: papersForNotification.length,
         results: ingestResults,

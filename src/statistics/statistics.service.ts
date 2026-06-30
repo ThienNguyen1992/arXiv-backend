@@ -48,7 +48,7 @@ export class StatisticsService {
     }
   }
 
-  async getHotKeywordsCloud(days: number = 30, size: number = 50) {
+  async getHotKeywordsCloud(days: number = 365, size: number = 50) {
     try {
       const date = new Date();
       date.setDate(date.getDate() - days);
