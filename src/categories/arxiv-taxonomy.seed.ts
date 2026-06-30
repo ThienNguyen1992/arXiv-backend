@@ -1,10 +1,13 @@
-import type { ParsedArxivCategory } from './categories.service';
+import type { ParsedArxivCategory, ParsedArxivTopic } from './categories.service';
+
+const topics = (...pairs: [string, string][]): ParsedArxivTopic[] =>
+  pairs.map(([code, title]) => ({ code, title, description: null }));
 
 export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
   {
     code: 'cs',
     title: 'Computer Science',
-    topics: [
+    topics: topics(
       ['cs.AI', 'Artificial Intelligence'],
       ['cs.AR', 'Hardware Architecture'],
       ['cs.CC', 'Computational Complexity'],
@@ -45,31 +48,31 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['cs.SE', 'Software Engineering'],
       ['cs.SI', 'Social and Information Networks'],
       ['cs.SY', 'Systems and Control'],
-    ].map(([code, title]) => ({ code, title, description: null })),
+    ),
   },
   {
     code: 'econ',
     title: 'Economics',
-    topics: [
+    topics: topics(
       ['econ.EM', 'Econometrics'],
       ['econ.GN', 'General Economics'],
       ['econ.TH', 'Theoretical Economics'],
-    ].map(([code, title]) => ({ code, title, description: null })),
+    ),
   },
   {
     code: 'eess',
     title: 'Electrical Engineering and Systems Science',
-    topics: [
+    topics: topics(
       ['eess.AS', 'Audio and Speech Processing'],
       ['eess.IV', 'Image and Video Processing'],
       ['eess.SP', 'Signal Processing'],
       ['eess.SY', 'Systems and Control'],
-    ].map(([code, title]) => ({ code, title, description: null })),
+    ),
   },
   {
     code: 'math',
     title: 'Mathematics',
-    topics: [
+    topics: topics(
       ['math.AC', 'Commutative Algebra'],
       ['math.AG', 'Algebraic Geometry'],
       ['math.AP', 'Analysis of PDEs'],
@@ -102,18 +105,24 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['math.SG', 'Symplectic Geometry'],
       ['math.SP', 'Spectral Theory'],
       ['math.ST', 'Statistics Theory'],
-    ].map(([code, title]) => ({ code, title, description: null })),
+    ),
   },
   {
-    code: 'physics',
-    title: 'Physics',
-    topics: [
+    code: 'astro-ph',
+    title: 'Astrophysics',
+    topics: topics(
       ['astro-ph.CO', 'Cosmology and Nongalactic Astrophysics'],
       ['astro-ph.EP', 'Earth and Planetary Astrophysics'],
       ['astro-ph.GA', 'Astrophysics of Galaxies'],
       ['astro-ph.HE', 'High Energy Astrophysical Phenomena'],
       ['astro-ph.IM', 'Instrumentation and Methods for Astrophysics'],
       ['astro-ph.SR', 'Solar and Stellar Astrophysics'],
+    ),
+  },
+  {
+    code: 'cond-mat',
+    title: 'Condensed Matter',
+    topics: topics(
       ['cond-mat.dis-nn', 'Disordered Systems and Neural Networks'],
       ['cond-mat.mes-hall', 'Mesoscale and Nanoscale Physics'],
       ['cond-mat.mtrl-sci', 'Materials Science'],
@@ -123,19 +132,63 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['cond-mat.stat-mech', 'Statistical Mechanics'],
       ['cond-mat.str-el', 'Strongly Correlated Electrons'],
       ['cond-mat.supr-con', 'Superconductivity'],
-      ['gr-qc', 'General Relativity and Quantum Cosmology'],
-      ['hep-ex', 'High Energy Physics - Experiment'],
-      ['hep-lat', 'High Energy Physics - Lattice'],
-      ['hep-ph', 'High Energy Physics - Phenomenology'],
-      ['hep-th', 'High Energy Physics - Theory'],
-      ['math-ph', 'Mathematical Physics'],
+    ),
+  },
+  {
+    code: 'gr-qc',
+    title: 'General Relativity and Quantum Cosmology',
+    topics: topics(['gr-qc', 'General Relativity and Quantum Cosmology']),
+  },
+  {
+    code: 'hep-ex',
+    title: 'High Energy Physics - Experiment',
+    topics: topics(['hep-ex', 'High Energy Physics - Experiment']),
+  },
+  {
+    code: 'hep-lat',
+    title: 'High Energy Physics - Lattice',
+    topics: topics(['hep-lat', 'High Energy Physics - Lattice']),
+  },
+  {
+    code: 'hep-ph',
+    title: 'High Energy Physics - Phenomenology',
+    topics: topics(['hep-ph', 'High Energy Physics - Phenomenology']),
+  },
+  {
+    code: 'hep-th',
+    title: 'High Energy Physics - Theory',
+    topics: topics(['hep-th', 'High Energy Physics - Theory']),
+  },
+  {
+    code: 'math-ph',
+    title: 'Mathematical Physics',
+    topics: topics(['math-ph', 'Mathematical Physics']),
+  },
+  {
+    code: 'nlin',
+    title: 'Nonlinear Sciences',
+    topics: topics(
       ['nlin.AO', 'Adaptation and Self-Organizing Systems'],
       ['nlin.CD', 'Chaotic Dynamics'],
       ['nlin.CG', 'Cellular Automata and Lattice Gases'],
       ['nlin.PS', 'Pattern Formation and Solitons'],
       ['nlin.SI', 'Exactly Solvable and Integrable Systems'],
-      ['nucl-ex', 'Nuclear Experiment'],
-      ['nucl-th', 'Nuclear Theory'],
+    ),
+  },
+  {
+    code: 'nucl-ex',
+    title: 'Nuclear Experiment',
+    topics: topics(['nucl-ex', 'Nuclear Experiment']),
+  },
+  {
+    code: 'nucl-th',
+    title: 'Nuclear Theory',
+    topics: topics(['nucl-th', 'Nuclear Theory']),
+  },
+  {
+    code: 'physics',
+    title: 'Physics',
+    topics: topics(
       ['physics.acc-ph', 'Accelerator Physics'],
       ['physics.ao-ph', 'Atmospheric and Oceanic Physics'],
       ['physics.app-ph', 'Applied Physics'],
@@ -158,13 +211,17 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['physics.pop-ph', 'Popular Physics'],
       ['physics.soc-ph', 'Physics and Society'],
       ['physics.space-ph', 'Space Physics'],
-      ['quant-ph', 'Quantum Physics'],
-    ].map(([code, title]) => ({ code, title, description: null })),
+    ),
+  },
+  {
+    code: 'quant-ph',
+    title: 'Quantum Physics',
+    topics: topics(['quant-ph', 'Quantum Physics']),
   },
   {
     code: 'q-bio',
     title: 'Quantitative Biology',
-    topics: [
+    topics: topics(
       ['q-bio.BM', 'Biomolecules'],
       ['q-bio.CB', 'Cell Behavior'],
       ['q-bio.GN', 'Genomics'],
@@ -175,12 +232,12 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['q-bio.QM', 'Quantitative Methods'],
       ['q-bio.SC', 'Subcellular Processes'],
       ['q-bio.TO', 'Tissues and Organs'],
-    ].map(([code, title]) => ({ code, title, description: null })),
+    ),
   },
   {
     code: 'q-fin',
     title: 'Quantitative Finance',
-    topics: [
+    topics: topics(
       ['q-fin.CP', 'Computational Finance'],
       ['q-fin.EC', 'Economics'],
       ['q-fin.GN', 'General Finance'],
@@ -190,18 +247,18 @@ export const ARXIV_TAXONOMY_SEED: ParsedArxivCategory[] = [
       ['q-fin.RM', 'Risk Management'],
       ['q-fin.ST', 'Statistical Finance'],
       ['q-fin.TR', 'Trading and Market Microstructure'],
-    ].map(([code, title]) => ({ code, title, description: null })),
+    ),
   },
   {
     code: 'stat',
     title: 'Statistics',
-    topics: [
+    topics: topics(
       ['stat.AP', 'Applications'],
       ['stat.CO', 'Computation'],
       ['stat.ME', 'Methodology'],
       ['stat.ML', 'Machine Learning'],
       ['stat.OT', 'Other Statistics'],
       ['stat.TH', 'Statistics Theory'],
-    ].map(([code, title]) => ({ code, title, description: null })),
+    ),
   },
 ];

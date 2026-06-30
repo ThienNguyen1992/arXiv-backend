@@ -1,14 +1,10 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { resolveArxivTopicCode } from '../common/utils/arxiv-taxonomy.util';
-import { CreateCategoryDto } from './dto/create-category.dto';
-import { UpdateCategoryDto } from './dto/update-category.dto';
 import { Category } from './entities/category.entity';
 import { Topic } from '../topics/entities/topic.entity';
 import { ARXIV_TAXONOMY_SEED } from './arxiv-taxonomy.seed';
-import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
-import { getPagination, toPaginatedResponse } from '../common/pagination';
 
 export interface ParsedArxivTopic {
   code: string;
@@ -35,15 +31,6 @@ export class CategoriesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async create(createCategoryDto: CreateCategoryDto) {
-    const existing = await this.categoriesRepository.findOneBy({ code: createCategoryDto.code });
-    if (existing) {
-      throw new ConflictException(`Category with code '${createCategoryDto.code}' already exists`);
-    }
-    const category = this.categoriesRepository.create(createCategoryDto);
-    return this.categoriesRepository.save(category);
-  }
-
   findAll() {
     return this.categoriesRepository.find({
       relations: ['topics'],
@@ -54,62 +41,6 @@ export class CategoriesService {
         },
       },
     });
-  }
-
-  async findAllTopicsFlat(query: PaginationQueryDto) {
-    const { page, size, skip, take } = getPagination(query);
-    const [topics, total] = await this.topicsRepository.findAndCount({
-      relations: ['category'],
-      order: { code: 'ASC' },
-      skip,
-      take,
-    });
-    console.log("🚀 ~ CategoriesService ~ findAllTopicsFlat ~ topics:", topics)
-
-    const data = topics.map((topic) => ({
-      id: topic.id,
-      code: topic.code,
-      slug: this.toSlug(topic.code),
-      title: topic.title,
-      description: topic.description,
-      category: {
-        id: topic.category.id,
-        code: topic.category.code,
-        title: topic.category.title,
-      },
-    }));
-    console.log("🚀 ~ CategoriesService ~ findAllTopicsFlat ~ data:", data)
-
-    return toPaginatedResponse(data, total, page, size);
-  }
-
-  async findOne(id: number) {
-    const category = await this.categoriesRepository.findOneBy({ id });
-    if (!category) {
-      throw new NotFoundException(`Category #${id} not found`);
-    }
-    return category;
-  }
-
-  async update(id: number, updateCategoryDto: UpdateCategoryDto) {
-    const category = await this.findOne(id);
-    this.categoriesRepository.merge(category, updateCategoryDto);
-    return this.categoriesRepository.save(category);
-  }
-
-  async remove(id: number) {
-    const category = await this.findOne(id);
-    return this.categoriesRepository.remove(category);
-  }
-
-  async ensureBundledTaxonomy() {
-    const topicsImported = await this.upsertTaxonomy(ARXIV_TAXONOMY_SEED);
-
-    return {
-      source: 'bundled-arxiv-taxonomy-seed',
-      categoriesImported: ARXIV_TAXONOMY_SEED.length,
-      topicsImported,
-    };
   }
 
   async ensureTopicsForCodes(codes: string[], manager?: EntityManager): Promise<Map<string, number>> {
@@ -123,40 +54,38 @@ export class CategoriesService {
       for (const code of uniqueCodes) {
         const info = resolveArxivTopicCode(code);
 
-        await entityManager
-          .createQueryBuilder()
-          .insert()
-          .into(Category)
-          .values({ code: info.categoryCode, title: info.categoryTitle })
-          .orIgnore()
-          .execute();
-
-        const category = await entityManager.findOne(Category, {
+        let category = await entityManager.findOne(Category, {
           where: { code: info.categoryCode },
         });
         if (!category) {
-          continue;
+          category = await entityManager.save(
+            Category,
+            entityManager.create(Category, {
+              code: info.categoryCode,
+              title: info.categoryTitle,
+            }),
+          );
+        } else if (category.title !== info.categoryTitle) {
+          category.title = info.categoryTitle;
+          category = await entityManager.save(Category, category);
         }
-
-        await entityManager
-          .createQueryBuilder()
-          .insert()
-          .into(Topic)
-          .values({
-            code: info.code,
-            title: info.title,
-            category_id: category.id,
-            is_active: true,
-          })
-          .orIgnore()
-          .execute();
 
         let topic = await entityManager.findOne(Topic, { where: { code: info.code } });
         if (!topic) {
-          continue;
-        }
-
-        if (topic.category_id !== category.id || topic.title !== info.title) {
+          topic = await entityManager.save(
+            Topic,
+            entityManager.create(Topic, {
+              code: info.code,
+              title: info.title,
+              category_id: category.id,
+              is_active: true,
+            }),
+          );
+        } else if (
+          topic.category_id !== category.id ||
+          topic.title !== info.title ||
+          !topic.is_active
+        ) {
           topic.category_id = category.id;
           topic.title = info.title;
           topic.is_active = true;
@@ -259,11 +188,18 @@ export class CategoriesService {
 
     const categories = new Map<string, ParsedArxivCategory>();
     let currentCategory: ParsedArxivCategory | null = null;
+    let inPhysicsSection = false;
 
     for (let index = 0; index < headings.length; index++) {
       const heading = headings[index];
 
       if (heading.level === 2) {
+        inPhysicsSection = heading.text === 'Physics';
+        if (inPhysicsSection) {
+          currentCategory = null;
+          continue;
+        }
+
         const code = this.categoryCodeFromName(heading.text);
         if (!code) {
           currentCategory = null;
@@ -280,11 +216,29 @@ export class CategoriesService {
         continue;
       }
 
+      if (heading.level === 3 && inPhysicsSection) {
+        const archiveMatch = heading.text.match(/^(.+?)\(([a-z][a-z-]*)\)$/);
+        if (!archiveMatch) {
+          currentCategory = null;
+          continue;
+        }
+
+        const [, title, code] = archiveMatch;
+        currentCategory = categories.get(code) ?? {
+          code,
+          title,
+          topics: [],
+        };
+        currentCategory.title = title;
+        categories.set(code, currentCategory);
+        continue;
+      }
+
       if (heading.level !== 4 || !currentCategory) {
         continue;
       }
 
-      const topicMatch = heading.text.match(/^([a-z][a-z-]*(?:\.[A-Z-]+)?)\s+\(([^)]+)\)$/);
+      const topicMatch = heading.text.match(/^([a-z][a-z-]*(?:\.[A-Za-z-]+)?)\s+\(([^)]+)\)$/);
       if (!topicMatch) {
         continue;
       }
@@ -336,10 +290,6 @@ export class CategoriesService {
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'");
-  }
-
-  private toSlug(code: string): string {
-    return code.toLowerCase().replace(/\./g, '-');
   }
 
   private formatErrorMessage(error: Error): string {

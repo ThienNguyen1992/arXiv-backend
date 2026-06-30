@@ -1,10 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty } from 'class-validator';
+import { IsNotEmpty, IsString } from 'class-validator';
 
 export class ImportLocalDataDto {
   @ApiProperty({
-    description: 'The absolute local path to the JSON file',
-    example: 'C:/downloads/note.json',
+    description: 'Absolute local path to a JSONL file (one arXiv paper object per line)',
+    example: 'C:/downloads/arxiv-metadata.json',
   })
   @IsString()
   @IsNotEmpty()

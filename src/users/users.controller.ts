@@ -37,6 +37,15 @@ export class UsersController {
     return this.usersService.findAll(query);
   }
 
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get the current user profile' })
+  @ApiResponse({ status: 200, description: 'Return the current user.', type: User })
+  getMe(@Request() req) {
+    return this.usersService.getMe(req.user.id);
+  }
+
   @Get('me/topics')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()

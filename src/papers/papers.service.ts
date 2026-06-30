@@ -2,7 +2,6 @@ import { Logger, BadRequestException, Injectable, InternalServerErrorException, 
 import { InjectRepository } from '@nestjs/typeorm';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
 import { In, Repository } from 'typeorm';
-import { CreatePaperDto } from './dto/create-paper.dto';
 import { UpdatePaperDto } from './dto/update-paper.dto';
 import { CreatePaperVersionDto } from './dto/create-paper-version.dto';
 import { AddPaperTopicDto } from './dto/add-paper-topic.dto';
@@ -16,7 +15,7 @@ import { ArxivPapersQueryDto } from './dto/arxiv-papers-query.dto';
 import { ArxivTimeQueryDto } from './dto/arxiv-time-query.dto';
 import { User } from '../users/entities/user.entity';
 import { Topic } from '../topics/entities/topic.entity';
-import { PaperScorer, PaperScoringInput } from '../common/utils/paper-score.util';
+import { PaperScorer, buildPaperScoringInput } from '../common/utils/paper-score.util';
 import { PaperDuplicatesService } from './paper-duplicates.service';
 import { YouMightLikeQueryDto } from './dto/you-might-like-query.dto';
 import { UserFavorite } from '../users/entities/user-favorite.entity';
@@ -60,51 +59,6 @@ export class PapersService {
     private readonly paperDuplicatesService: PaperDuplicatesService,
   ) {}
 
-  create(createPaperDto: CreatePaperDto) {
-    const paper = this.papersRepository.create(createPaperDto);
-    return this.papersRepository.save(paper);
-  }
-
-  async findAll(query: PaperFilterDto) {
-    const { page, size, skip, take } = getPagination(query);
-
-    const qb = this.papersRepository.createQueryBuilder('paper')
-      .leftJoinAndSelect('paper.paperTopics', 'paperTopics')
-      .leftJoinAndSelect('paperTopics.topic', 'topic')
-      .leftJoinAndSelect('topic.category', 'category');
-
-    if (query.topics && query.topics.length > 0) {
-      qb.innerJoin('paper.paperTopics', 'pt_filter')
-        .innerJoin('pt_filter.topic', 't_filter')
-        .andWhere('t_filter.code IN (:...topicCodes)', { topicCodes: query.topics });
-    }
-
-    const titleTerm = query.title?.trim();
-    const authorTerm = query.author?.trim();
-    const abstractTerm = query.abstract?.trim() || query.q?.trim();
-
-    if (titleTerm) {
-      qb.andWhere('paper.title ILIKE :title', { title: `%${titleTerm}%` });
-    }
-
-    if (authorTerm) {
-      qb.andWhere('paper.authors ILIKE :author', { author: `%${authorTerm}%` });
-    }
-
-    if (abstractTerm) {
-      qb.andWhere('paper.abstract ILIKE :abstract', { abstract: `%${abstractTerm}%` });
-    }
-
-    qb.orderBy('paper.published_at', 'DESC')
-      .addOrderBy('paper.created_at', 'DESC')
-      .skip(skip)
-      .take(take);
-
-    const [data, total] = await qb.getManyAndCount();
-
-    return toPaginatedResponse(data, total, page, size);
-  }
-
   async getYouMightLike(userId: string, query: YouMightLikeQueryDto) {
     const paperTopics = this.normalizeTopicCodes(query.paperTopics);
     if (paperTopics.length === 0) {
@@ -134,16 +88,20 @@ export class PapersService {
     const userTopicCodes = userResolution.topicCodes;
     const fallback = userResolution.fallback;
 
+
+    // Loại history với favorite vơi cái topic mình đang coi
     const excludedArxivIds = await this.getRecommendationExcludedArxivIds(
       userId,
       query.excludeArxivId,
     );
+    console.log("🚀 ~ PapersService ~ buildYouMightLikeDetailResponse ~ excludedArxivIds:", excludedArxivIds)
 
     const peerTopicRanking = await this.rankTopicsByPeerUserFrequency(
       query.paperTopics,
       userId,
       topPaperTopics,
     );
+    console.log("🚀 ~ PapersService ~ buildYouMightLikeDetailResponse ~ peerTopicRanking:", peerTopicRanking)
     const selectedPeerTopics = peerTopicRanking.topics.map((item) => item.topic);
 
     const paperTopicPapers =
@@ -955,8 +913,8 @@ export class PapersService {
 
   async fetchArxivPapersByTimeRange(query: ArxivTimeQueryDto) {
     const { page, size, skip } = getPagination(query);
-    const startFormatted = query.startDate.replace(/-/g, '') + '000000';
-    const endFormatted = query.endDate.replace(/-/g, '') + '235959';
+    const startFormatted = query.startDate.replace(/-/g, '') + '0000';
+    const endFormatted = query.endDate.replace(/-/g, '') + '2359';
     const searchQuery = `submittedDate:[${startFormatted} TO ${endFormatted}]`;
     const url = new URL(this.arxivApiUrl);
     url.searchParams.set('search_query', searchQuery);
@@ -967,7 +925,7 @@ export class PapersService {
 
     let xml: string;
     try {
-      xml = await this.fetchTextWithTimeout(url.toString());
+      xml = await this.fetchTextWithTimeout(url.toString(), { timeoutMs: 30000, maxAttempts: 4 });
     } catch (error) {
       const message = error instanceof Error ? this.formatErrorMessage(error) : 'unknown error';
       throw new InternalServerErrorException(`Could not fetch arXiv papers by time range: ${message}`);
@@ -991,7 +949,7 @@ export class PapersService {
   async fetchAllArxivPapersByTimeRange(
     startDate: string,
     endDate: string,
-    pageSize = 1000,
+    pageSize = 200,
   ): Promise<{ data: ArxivPaperDto[]; total: number; pagesFetched: number }> {
     const all: ArxivPaperDto[] = [];
     let page = 1;
@@ -1091,50 +1049,51 @@ export class PapersService {
   async calculateScoreForPaper(id: string) {
     const paper = await this.findDatabasePaper(id);
     const scorer = new PaperScorer();
-    
-    const input: PaperScoringInput = {
-      published_date: paper.published_at,
-      updated_date: paper.updated_at,
-      journal_ref: paper.journal_ref,
-      abstract: paper.abstract,
-      comments: paper.comments,
-      version: paper.current_version,
-      authors: [],
-    };
 
-    const result = scorer.calculateScore(input);
+    const result = scorer.calculateScore(this.buildScoringInputFromPaper(paper));
     paper.score = result.total_score;
     await this.papersRepository.save(paper);
-    
+
     return { paper_id: paper.id, score_details: result };
   }
 
   async calculateScoresForAllPapers() {
     const papers = await this.papersRepository.find({
-      relations: ['versions'],
+      relations: ['versions', 'paperTopics', 'paperTopics.topic'],
     });
 
     const scorer = new PaperScorer();
     let updatedCount = 0;
 
     for (const paper of papers) {
-      const input: PaperScoringInput = {
-        published_date: paper.published_at,
-        updated_date: paper.updated_at,
-        journal_ref: paper.journal_ref,
-        abstract: paper.abstract,
-        comments: paper.comments,
-        version: paper.current_version,
-        authors: [],
-      };
-
-      const result = scorer.calculateScore(input);
+      const result = scorer.calculateScore(this.buildScoringInputFromPaper(paper));
       paper.score = result.total_score;
       await this.papersRepository.save(paper);
       updatedCount++;
     }
 
     return { message: `Successfully updated scores for ${updatedCount} papers` };
+  }
+
+  private buildScoringInputFromPaper(paper: Paper) {
+    const categories =
+      paper.paperTopics
+        ?.map((paperTopic) => paperTopic.topic?.code)
+        .filter((code): code is string => Boolean(code)) ?? [];
+
+    return buildPaperScoringInput({
+      published_date: paper.published_at,
+      updated_date: paper.updated_at,
+      journal_ref: paper.journal_ref,
+      doi: paper.doi,
+      abstract: paper.abstract,
+      comments: paper.comments,
+      categories,
+      version: paper.current_version,
+      authors: paper.authors,
+      authors_parsed: paper.authors_parsed,
+      license: paper.license,
+    });
   }
 
   async addVersion(paperId: string, dto: CreatePaperVersionDto) {
@@ -1206,26 +1165,63 @@ export class PapersService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private async fetchTextWithTimeout(url: string, timeoutMs = 8000) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  private async fetchTextWithTimeout(
+    url: string,
+    options: { timeoutMs?: number; maxAttempts?: number } = {},
+  ) {
+    const timeoutMs = options.timeoutMs ?? 8000;
+    const maxAttempts = options.maxAttempts ?? 3;
+    let lastError: Error | undefined;
 
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'NMCNPM backend/1.0 (arXiv paper feed)',
-        },
-      });
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (!response.ok) {
-        throw new Error(`arXiv returned ${response.status}`);
+      try {
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'NMCNPM backend/1.0 (arXiv paper feed)',
+          },
+        });
+
+        if (response.ok) {
+          return await response.text();
+        }
+
+        const retryable = [429, 500, 502, 503, 504].includes(response.status);
+        lastError = new Error(`arXiv returned ${response.status}`);
+        if (!retryable || attempt === maxAttempts) {
+          throw lastError;
+        }
+
+        this.logger.warn(
+          `arXiv request failed (${response.status}), retrying ${attempt}/${maxAttempts}`,
+        );
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          lastError = new Error(`arXiv request timed out after ${timeoutMs}ms`);
+        } else if (error instanceof Error) {
+          lastError = error;
+        } else {
+          lastError = new Error('unknown error');
+        }
+
+        if (attempt === maxAttempts) {
+          throw lastError;
+        }
+
+        this.logger.warn(
+          `arXiv request error: ${lastError.message}, retrying ${attempt}/${maxAttempts}`,
+        );
+      } finally {
+        clearTimeout(timeout);
       }
 
-      return await response.text();
-    } finally {
-      clearTimeout(timeout);
+      await this.sleep(3000 * attempt);
     }
+
+    throw lastError ?? new Error('arXiv request failed');
   }
 
   parseArxivXml(xml: string): { total: number; data: ArxivPaperDto[] } {

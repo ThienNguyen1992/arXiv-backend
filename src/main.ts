@@ -9,8 +9,11 @@ async function bootstrap() {
   app.useGlobalPipes(new import_common.ValidationPipe({ transform: true }));
 
   const config = new DocumentBuilder()
-    .setTitle('Backend API')
-    .setDescription('The backend API description')
+    .setTitle('arXiv Backend API')
+    .setDescription(
+      'NestJS backend for arXiv paper discovery. Auth uses JWT access tokens only. ' +
+        'Swagger UI: /api',
+    )
     .setVersion('1.0')
     .addBearerAuth()
     .build();
